@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+
+    <!-- ===== Protótipo descartável (issue 01): prova que o org.eclipse.debug.ui funciona no DBeaver ===== -->
+
+    <extension point="org.eclipse.debug.core.launchConfigurationTypes">
+        <launchConfigurationType
+                id="dev.fbdebug.dbeaver.prototype.launchType"
+                name="Firebird PSQL (protótipo)"
+                delegate="dev.fbdebug.dbeaver.prototype.PrototypeLaunchDelegate"
+                modes="debug"
+                public="true"/>
+    </extension>
+
+    <extension point="org.eclipse.debug.ui.launchConfigurationTabGroups">
+        <launchConfigurationTabGroup
+                id="dev.fbdebug.dbeaver.prototype.tabGroup"
+                type="dev.fbdebug.dbeaver.prototype.launchType"
+                class="dev.fbdebug.dbeaver.prototype.PrototypeTabGroup"/>
+    </extension>
+
+    <extension point="org.eclipse.core.resources.markers"
+               id="prototypeLineBreakpointMarker"
+               name="Firebird PSQL breakpoint (protótipo)">
+        <super type="org.eclipse.debug.core.lineBreakpointMarker"/>
+        <persistent value="false"/>
+    </extension>
+
+    <extension point="org.eclipse.debug.core.breakpoints">
+        <breakpoint
+                id="dev.fbdebug.dbeaver.prototype.lineBreakpoint"
+                markerType="dev.fbdebug.dbeaver.prototypeLineBreakpointMarker"
+                class="dev.fbdebug.dbeaver.prototype.PrototypeLineBreakpoint"
+                name="Firebird PSQL breakpoint (protótipo)"/>
+    </extension>
+
+    <extension point="org.eclipse.debug.ui.toggleBreakpointsTargetFactories">
+        <toggleTargetFactory
+                id="dev.fbdebug.dbeaver.prototype.toggleTargetFactory"
+                class="dev.fbdebug.dbeaver.prototype.PrototypeToggleTargetFactory"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.commands">
+        <command
+                id="dev.fbdebug.dbeaver.prototype.launch"
+                name="Depurar protótipo Firebird PSQL"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.handlers">
+        <handler
+                commandId="dev.fbdebug.dbeaver.prototype.launch"
+                class="dev.fbdebug.dbeaver.prototype.PrototypeLaunchHandler"/>
+        <!-- O debug.ui só liga Ctrl+Shift+B a um handler via breakpointActionSet, que o DBeaver não exibe. -->
+        <handler
+                commandId="org.eclipse.debug.ui.commands.ToggleBreakpoint"
+                class="dev.fbdebug.dbeaver.prototype.PrototypeToggleBreakpointHandler"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.menus">
+        <menuContribution locationURI="menu:org.eclipse.ui.main.menu?after=additions">
+            <menu id="dev.fbdebug.dbeaver.menu" label="PSQL Debug">
+                <command commandId="dev.fbdebug.dbeaver.prototype.launch"/>
+            </menu>
+        </menuContribution>
+    </extension>
+
+</plugin>

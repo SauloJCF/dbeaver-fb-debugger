@@ -1,0 +1,11 @@
+target/
+bin/
+
+# Gerados pelo m2e/PDE ao importar no Eclipse
+.project
+.classpath
+.settings/
+/.metadata/
+
+# Configuração local do banco de teste (modelo: fbdebug-test.properties.example)
+fbdebug-test.properties

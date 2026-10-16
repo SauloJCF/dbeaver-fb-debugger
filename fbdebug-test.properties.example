@@ -1,0 +1,8 @@
+# Banco Firebird 5 dos Testes diferenciais (ADR 0005). Copie para fbdebug-test.properties (fora do git).
+# O arquivo do banco é APAGADO e recriado a cada execução da suíte: nunca aponte para um banco de verdade.
+host=localhost
+port=3050
+# Caminho do arquivo no servidor; a pasta precisa existir.
+database=C:/Temp/fbdebug-test.fdb
+user=SYSDBA
+password=masterkey

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.fbdebug.dbeaver</groupId>
+    <artifactId>fbdebug-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Firebird PSQL Debugger (parent)</name>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <tycho.version>5.0.4</tycho.version>
+        <!-- Igual ao org.antlr.antlr4-runtime embutido no plugin (lib/). -->
+        <antlr.version>4.13.2</antlr.version>
+        <junit.version>5.13.4</junit.version>
+        <jaybird.version>6.0.7</jaybird.version>
+        <surefire.version>3.5.4</surefire.version>
+    </properties>
+
+    <modules>
+        <module>releng/dev.fbdebug.dbeaver.target</module>
+        <module>bundles/dev.fbdebug.dbeaver</module>
+        <module>features/dev.fbdebug.dbeaver.feature</module>
+        <module>releng/dev.fbdebug.dbeaver.repository</module>
+    </modules>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.eclipse.tycho</groupId>
+                <artifactId>tycho-maven-plugin</artifactId>
+                <version>${tycho.version}</version>
+                <extensions>true</extensions>
+            </plugin>
+            <plugin>
+                <groupId>org.eclipse.tycho</groupId>
+                <artifactId>target-platform-configuration</artifactId>
+                <version>${tycho.version}</version>
+                <configuration>
+                    <!-- Mesma definição que a IDE usa: releng/dev.fbdebug.dbeaver.target -->
+                    <target>
+                        <artifact>
+                            <groupId>dev.fbdebug.dbeaver</groupId>
+                            <artifactId>dev.fbdebug.dbeaver.target</artifactId>
+                            <version>0.1.0-SNAPSHOT</version>
+                        </artifact>
+                    </target>
+                    <targetDefinitionIncludeSource>ignore</targetDefinitionIncludeSource>
+                    <environments>
+                        <environment>
+                            <os>win32</os>
+                            <ws>win32</ws>
+                            <arch>x86_64</arch>
+                        </environment>
+                    </environments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
