@@ -8,33 +8,49 @@ import java.util.List;
 import dev.fbdebug.dbeaver.psql.ast.Assignment;
 import dev.fbdebug.dbeaver.psql.ast.Block;
 import dev.fbdebug.dbeaver.psql.ast.Continue;
+import dev.fbdebug.dbeaver.psql.ast.DmlStatement;
+import dev.fbdebug.dbeaver.psql.ast.ExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.Exit;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.If;
+import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
+import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
 import dev.fbdebug.dbeaver.psql.ast.VariableDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.While;
 
 /**
- * Percorre o AST da Rotina e executa a lógica procedural no cliente (ADR 0001). O servidor só recebe Avaliações
- * de expressão. Não controla a transação: isso é da {@link DebugSession}.
+ * Percorre o AST da Rotina e executa a lógica procedural no cliente (ADR 0001). O servidor recebe só Fatias DML e
+ * Avaliações de expressão. Não controla a transação: isso é da {@link DebugSession}.
  */
 public final class Interpreter {
 
+    private final Connection connection;
     private final ExpressionEvaluator evaluator;
+    private final DmlExecutor dml;
 
     public Interpreter(Connection connection) {
+        this.connection = connection;
         this.evaluator = new ExpressionEvaluator(connection);
+        this.dml = new DmlExecutor(connection, evaluator);
     }
 
     /**
+     * Executa a procedure como uma chamada do motor: se ela falhar, o que ela alterou é desfeito (savepoint), como
+     * no {@code EXECUTE PROCEDURE} nativo.
+     *
      * @param inputs valores dos parâmetros de entrada, na ordem declarada; os que faltarem no fim usam o valor
      *            padrão do parâmetro
      */
     public ProcedureResult execute(ProcedureDefinition procedure, List<?> inputs) throws SQLException {
+        return Savepoints.undoneOnError(connection, () -> run(procedure, inputs));
+    }
+
+    private ProcedureResult run(ProcedureDefinition procedure, List<?> inputs) throws SQLException {
         if (inputs.size() > procedure.inputs().size()) {
             throw new PsqlExecutionException(procedure.name() + " recebe " + procedure.inputs().size()
                     + " parâmetro(s) de entrada, mas foram informados " + inputs.size());
@@ -110,6 +126,21 @@ public final class Interpreter {
             case Exit exit -> {
                 return Jump.EXIT;
             }
+            case DmlStatement slice -> {
+                refuse(slice.unsupported());
+                assignInto(slice.into(), dml.execute(slice, frame), frame);
+                return null;
+            }
+            case ExecuteStatement dynamic -> {
+                refuse(dynamic.unsupported());
+                assignInto(dynamic.into(), dml.execute(dynamic, frame), frame);
+                return null;
+            }
+            case InAutonomousTransaction autonomous -> {
+                refuse(List.of(new UnsupportedUse(UnsupportedConstruct.IN_AUTONOMOUS_TRANSACTION,
+                        autonomous.position())));
+                return null;
+            }
         }
     }
 
@@ -127,6 +158,25 @@ public final class Interpreter {
             }
         }
         return null;
+    }
+
+    /** @param row linha já convertida para os tipos dos alvos, ou {@code null} se não veio linha */
+    private static void assignInto(List<String> targets, List<Object> row, Frame frame) {
+        if (row == null) {
+            return; // sem linha, o motor deixa os alvos como estavam
+        }
+        for (int i = 0; i < targets.size(); i++) {
+            store(frame.get(targets.get(i)), row.get(i));
+        }
+    }
+
+    /** O Pré-check recusa estas construções antes do launch; aqui é a garantia de nunca executá-las. */
+    private static void refuse(List<UnsupportedUse> unsupported) {
+        if (!unsupported.isEmpty()) {
+            UnsupportedUse use = unsupported.get(0);
+            throw new PsqlExecutionException(use.position() + ": " + use.construct().syntax()
+                    + " não é suportado pelo debugger");
+        }
     }
 
     private void assign(Variable target, Expression value, Frame frame) throws SQLException {

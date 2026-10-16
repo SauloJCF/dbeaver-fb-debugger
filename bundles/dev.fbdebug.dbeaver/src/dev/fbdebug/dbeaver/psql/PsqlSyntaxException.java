@@ -8,13 +8,21 @@ public final class PsqlSyntaxException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
     private final transient SourcePosition position;
+    private final String detail;
 
-    PsqlSyntaxException(String message, SourcePosition position) {
-        super(position + ": " + message);
+    PsqlSyntaxException(String detail, SourcePosition position) {
+        super(position + ": " + detail);
         this.position = position;
+        this.detail = detail;
     }
 
+    /** Onde o reconhecimento falhou. */
     public SourcePosition position() {
         return position;
+    }
+
+    /** O que não foi reconhecido, sem a posição. */
+    public String detail() {
+        return detail;
     }
 }

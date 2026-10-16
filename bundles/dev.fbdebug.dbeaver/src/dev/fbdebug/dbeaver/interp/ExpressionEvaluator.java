@@ -27,11 +27,15 @@ final class ExpressionEvaluator {
      * arredonda, completa {@code CHAR} e recusa truncamento do mesmo jeito.
      */
     Object evaluate(Expression expression, Frame frame, String targetType) throws SQLException {
-        List<Object> parameters = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("SELECT CAST((");
-        appendBound(sql, parameters, expression, frame);
-        sql.append(") AS ").append(targetType).append(") FROM RDB$DATABASE");
-        return selectSingleValue(sql.toString(), parameters);
+        BoundSql bound = BoundSql.bind(expression, frame);
+        return selectSingleValue("SELECT CAST((" + bound.sql() + ") AS " + targetType + ") FROM RDB$DATABASE",
+                bound.parameters());
+    }
+
+    /** Valor da expressão com o tipo que o servidor dá a ela, sem conversão para um alvo. */
+    Object value(Expression expression, Frame frame) throws SQLException {
+        BoundSql bound = BoundSql.bind(expression, frame);
+        return selectSingleValue("SELECT (" + bound.sql() + ") FROM RDB$DATABASE", bound.parameters());
     }
 
     /**
@@ -39,12 +43,9 @@ final class ExpressionEvaluator {
      * {@code FALSE} e desconhecido ({@code NULL}) valem como falso, com a lógica de três valores do servidor.
      */
     boolean isTrue(Expression condition, Frame frame) throws SQLException {
-        List<Object> parameters = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("SELECT 1 FROM RDB$DATABASE WHERE (");
-        appendBound(sql, parameters, condition, frame);
-        sql.append(')');
-        try (PreparedStatement statement = prepare(sql.toString(), parameters);
-                ResultSet resultSet = statement.executeQuery()) {
+        BoundSql bound = BoundSql.bind(condition, frame);
+        try (PreparedStatement statement = prepare("SELECT 1 FROM RDB$DATABASE WHERE (" + bound.sql() + ")",
+                bound.parameters()); ResultSet resultSet = statement.executeQuery()) {
             return resultSet.next();
         }
     }
@@ -55,17 +56,28 @@ final class ExpressionEvaluator {
                 Collections.singletonList(value));
     }
 
-    /** Texto da expressão com cada variável do escopo trocada por {@code CAST(? AS <tipo>)}. */
-    private static void appendBound(StringBuilder sql, List<Object> parameters, Expression expression,
-            Frame frame) {
-        for (Expression.Part part : expression.parts()) {
-            Variable variable = part instanceof Expression.Name name ? frame.find(name.name()).orElse(null) : null;
-            if (variable != null) {
-                sql.append("CAST(? AS ").append(variable.type()).append(')');
-                parameters.add(variable.value());
-            } else {
-                sql.append(part.sql());
+    /**
+     * Valores lidos do servidor (colunas de um {@code SELECT … INTO}, por exemplo) convertidos para os tipos dos
+     * alvos como numa atribuição. Cada valor volta ao servidor com um tipo que o representa sem perda
+     * ({@link ValueTypes}), e o {@code CAST} para o tipo do alvo é do servidor, não do Jaybird.
+     */
+    List<Object> assignable(List<Object> values, List<String> targetTypes) throws SQLException {
+        StringBuilder sql = new StringBuilder("SELECT ");
+        for (int i = 0; i < values.size(); i++) {
+            Object value = values.get(i);
+            sql.append(i == 0 ? "" : ", ").append("CAST(")
+                    .append(value == null ? "?" : "CAST(? AS " + ValueTypes.sqlType(value) + ")")
+                    .append(" AS ").append(targetTypes.get(i)).append(')');
+        }
+        sql.append(" FROM RDB$DATABASE");
+        try (PreparedStatement statement = prepare(sql.toString(), values);
+                ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+            List<Object> converted = new ArrayList<>(values.size());
+            for (int i = 1; i <= values.size(); i++) {
+                converted.add(resultSet.getObject(i));
             }
+            return converted;
         }
     }
 
@@ -78,15 +90,6 @@ final class ExpressionEvaluator {
     }
 
     private PreparedStatement prepare(String sql, List<Object> parameters) throws SQLException {
-        PreparedStatement statement = connection.prepareStatement(sql);
-        try {
-            for (int i = 0; i < parameters.size(); i++) {
-                statement.setObject(i + 1, parameters.get(i));
-            }
-        } catch (SQLException | RuntimeException e) {
-            statement.close();
-            throw e;
-        }
-        return statement;
+        return Statements.prepare(connection, sql, parameters);
     }
 }

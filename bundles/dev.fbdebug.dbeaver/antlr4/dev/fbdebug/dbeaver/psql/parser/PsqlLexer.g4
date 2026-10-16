@@ -1,8 +1,9 @@
 /*
  * Léxico da camada procedural do PSQL do Firebird 5.
  *
- * Só as palavras que estruturam a camada procedural viram tokens próprios. O resto (funções, tipos,
- * palavras de expressão) sai como IDENTIFIER e é repassado ao servidor como texto (Modo Careful).
+ * Só as palavras que estruturam a camada procedural ou abrem uma Fatia DML viram tokens próprios. O resto
+ * (funções, tipos, palavras de expressão e de SQL) sai como IDENTIFIER e é repassado ao servidor como texto
+ * (Modo Careful).
  */
 lexer grammar PsqlLexer;
 
@@ -17,21 +18,31 @@ CONTINUE  : 'CONTINUE';
 CREATE    : 'CREATE';
 DECLARE   : 'DECLARE';
 DEFAULT   : 'DEFAULT';
+DELETE    : 'DELETE';
 DO        : 'DO';
 ELSE      : 'ELSE';
 END       : 'END';
+EXECUTE   : 'EXECUTE';
 EXIT      : 'EXIT';
 IF        : 'IF';
+IN        : 'IN';
+INSERT    : 'INSERT';
+INTO      : 'INTO';
 LEAVE     : 'LEAVE';
+MERGE     : 'MERGE';
 NOT       : 'NOT';
 NULL      : 'NULL';
 OR        : 'OR';
 PROCEDURE : 'PROCEDURE';
 RECREATE  : 'RECREATE';
 RETURNS   : 'RETURNS';
+SELECT    : 'SELECT';
+STATEMENT : 'STATEMENT';
 THEN      : 'THEN';
+UPDATE    : 'UPDATE';
 VARIABLE  : 'VARIABLE';
 WHILE     : 'WHILE';
+WITH      : 'WITH';
 
 SEMI   : ';';
 COLON  : ':';

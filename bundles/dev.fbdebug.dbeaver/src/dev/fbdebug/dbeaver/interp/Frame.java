@@ -6,10 +6,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 
-/** Variáveis visíveis numa Rotina em execução: parâmetros de entrada, de saída e locais, na ordem declarada. */
+/**
+ * Estado de uma Rotina em execução: variáveis visíveis (parâmetros de entrada, de saída e locais, na ordem
+ * declarada) e o {@code ROW_COUNT}.
+ */
 public final class Frame {
 
     private final Map<String, Variable> variables = new LinkedHashMap<>();
+    private long rowCount;
 
     Variable declare(String name, String type, boolean notNull, Variable.Kind kind) {
         Variable variable = new Variable(name, type, notNull, kind);
@@ -30,5 +34,14 @@ public final class Frame {
 
     public Collection<Variable> variables() {
         return Collections.unmodifiableCollection(variables.values());
+    }
+
+    /** {@code ROW_COUNT}: linhas afetadas pela última Fatia DML da Rotina, 0 antes da primeira. */
+    public long rowCount() {
+        return rowCount;
+    }
+
+    void rowCount(long count) {
+        rowCount = count;
     }
 }

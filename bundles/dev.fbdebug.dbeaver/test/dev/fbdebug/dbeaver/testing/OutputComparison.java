@@ -1,12 +1,19 @@
 package dev.fbdebug.dbeaver.testing;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
-/** Compara as saídas da execução nativa com as do Interpretador e descreve cada divergência. */
+/** Compara o resultado da execução nativa com o do Interpretador e descreve cada divergência. */
 public final class OutputComparison {
+
+    private static final Pattern STACK_LINE = Pattern.compile("-?At (procedure|block|trigger|function|package) ");
 
     private OutputComparison() {
     }
@@ -35,6 +42,78 @@ public final class OutputComparison {
                     + " saída(s) divergem entre a execução nativa e o Interpretador\n"
                     + String.join("\n", differences));
         }
+    }
+
+    /**
+     * Mesma exceção dos dois lados, ou nenhuma: código ISC, SQLSTATE e mensagem do motor, sem a pilha de chamadas
+     * ({@code At procedure ...}), que o Interpretador não reproduz.
+     *
+     * @param nativeError exceção da execução nativa, ou {@code null}
+     * @param interpretedError exceção do Interpretador, ou {@code null}
+     */
+    public static void assertSameError(String call, SQLException nativeError, SQLException interpretedError) {
+        if (nativeError == null && interpretedError == null) {
+            return;
+        }
+        if (nativeError == null || interpretedError == null || nativeError.getErrorCode() != interpretedError
+                .getErrorCode() || !Objects.equals(nativeError.getSQLState(), interpretedError.getSQLState())
+                || !engineMessage(nativeError).equals(engineMessage(interpretedError))) {
+            AssertionError error = new AssertionError(call + ": exceções divergem entre a execução nativa e o "
+                    + "Interpretador\n  nativo=" + describeError(nativeError) + "\n  interpretado="
+                    + describeError(interpretedError));
+            if (interpretedError != null) {
+                error.addSuppressed(interpretedError);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Mesmas linhas em cada tabela.
+     *
+     * @param nativeTables linhas descritas de cada tabela, como {@link DifferentialHarness} as lê
+     */
+    public static void assertSameTables(String call, Map<String, List<String>> nativeTables,
+            Map<String, List<String>> interpretedTables) {
+        List<String> differences = new ArrayList<>();
+        for (Map.Entry<String, List<String>> table : nativeTables.entrySet()) {
+            List<String> expected = table.getValue();
+            List<String> actual = interpretedTables.get(table.getKey());
+            if (expected.equals(actual)) {
+                continue;
+            }
+            List<String> missing = new ArrayList<>(expected);
+            actual.forEach(missing::remove);
+            List<String> extra = new ArrayList<>(actual);
+            expected.forEach(extra::remove);
+            differences.add("  " + table.getKey() + ": só no nativo=" + missing + " × só no interpretado=" + extra);
+        }
+        if (!differences.isEmpty()) {
+            throw new AssertionError(call + ": " + differences.size()
+                    + " tabela(s) divergem entre a execução nativa e o Interpretador\n"
+                    + String.join("\n", differences));
+        }
+    }
+
+    /**
+     * Mensagem do motor sem o sufixo do Jaybird ({@code [SQLState:..., ISC error code:...]}) e sem as linhas
+     * {@code At procedure/block/trigger/function ...}.
+     */
+    static String engineMessage(SQLException error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        int suffix = message.lastIndexOf(" [SQLState:");
+        if (suffix >= 0) {
+            message = message.substring(0, suffix);
+        }
+        return Arrays.stream(message.split("; |\\R"))
+                .map(String::strip)
+                .filter(part -> !part.isEmpty() && !STACK_LINE.matcher(part).lookingAt())
+                .collect(Collectors.joining("; "));
+    }
+
+    private static String describeError(SQLException error) {
+        return error == null ? "sem exceção"
+                : engineMessage(error) + " (ISC " + error.getErrorCode() + ", SQLSTATE " + error.getSQLState() + ")";
     }
 
     /** Valor com o tipo Java, e texto entre aspas para deixar espaços visíveis. */

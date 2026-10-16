@@ -3,7 +3,9 @@ package dev.fbdebug.dbeaver.interp;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.stream.Collectors;
 
+import dev.fbdebug.dbeaver.psql.PreCheck;
 import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
 
 /**
@@ -23,9 +25,15 @@ public final class DebugSession implements AutoCloseable {
         connection.setAutoCommit(false);
     }
 
+    /** @throws PsqlExecutionException se o Pré-check recusar a Rotina, antes de executar qualquer coisa */
     public ProcedureResult run(ProcedureDefinition procedure, List<?> inputs) throws SQLException {
         if (finished) {
             throw new IllegalStateException("A Sessão de debug já terminou");
+        }
+        List<PreCheck.Finding> findings = PreCheck.scan(procedure);
+        if (!findings.isEmpty()) {
+            throw new PsqlExecutionException("Pré-check recusou " + procedure.name() + ":\n"
+                    + findings.stream().map(PreCheck.Finding::toString).collect(Collectors.joining("\n")));
         }
         finished = true;
         ProcedureResult result;

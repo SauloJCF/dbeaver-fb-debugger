@@ -72,6 +72,24 @@ statement
     | leaveStatement
     | continueStatement
     | exitStatement
+    | dmlStatement
+    | executeStatement
+    | autonomousTransaction
+    ;
+
+// Fatia DML: texto opaco até o ';'. O AstBuilder localiza os :var, os alvos do INTO e as cláusulas recusadas.
+dmlStatement
+    : ( SELECT | WITH | INSERT | UPDATE | DELETE | MERGE ) ~SEMI* SEMI
+    ;
+
+// Opções e INTO separados pelo AstBuilder, como numa Fatia DML.
+executeStatement
+    : EXECUTE STATEMENT ~SEMI* SEMI
+    ;
+
+// IN AUTONOMOUS TRANSACTION DO (AUTONOMOUS e TRANSACTION não são reservadas). Reconhecido só para o Pré-check.
+autonomousTransaction
+    : IN identifier identifier DO statement
     ;
 
 assignment
@@ -138,4 +156,5 @@ identifier
     | EXIT
     | IF
     | LEAVE
+    | STATEMENT
     ;

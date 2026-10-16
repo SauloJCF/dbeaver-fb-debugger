@@ -1,7 +1,9 @@
 package dev.fbdebug.dbeaver.psql.ast;
 
-/** Statement procedural executado pelo Interpretador. */
-public sealed interface Statement permits Block, Assignment, If, While, Leave, Continue, Exit {
+/** Statement da Rotina: procedural, executado pelo Interpretador, ou Fatia DML, executada pelo servidor. */
+public sealed interface Statement
+        permits Block, Assignment, If, While, Leave, Continue, Exit, DmlStatement, ExecuteStatement,
+        InAutonomousTransaction {
 
     SourcePosition position();
 }

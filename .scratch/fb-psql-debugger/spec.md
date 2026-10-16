@@ -62,7 +62,7 @@ Depurar Rotinas PSQL do Firebird 5 dentro do DBeaver CE, com breakpoints, step e
 - Attach a execuções iniciadas pela aplicação
 - Step into em triggers a partir de DML; triggers de banco/DDL
 - Breakpoints persistentes
-- Construções recusadas pelo Pré-check (ex.: `WHERE CURRENT OF`, `EXECUTE STATEMENT … ON EXTERNAL`, `IN AUTONOMOUS TRANSACTION`) — a lista final sai da implementação da gramática
+- Construções recusadas pelo Pré-check (ex.: `WHERE CURRENT OF`, `EXECUTE STATEMENT … ON EXTERNAL`, `IN AUTONOMOUS TRANSACTION`, `ROW_COUNT` dentro de DML) — a lista fica no enum `UnsupportedConstruct` (`bundles/dev.fbdebug.dbeaver/src/dev/fbdebug/dbeaver/psql/ast/UnsupportedConstruct.java`)
 
 ## Build e qualidade
 
