@@ -9,10 +9,62 @@ parser grammar PsqlParser;
 
 options { tokenVocab = PsqlLexer; }
 
+// Rotina avulsa: procedure, function ou EXECUTE BLOCK.
+routineDefinition
+    : ( procedureDefinition | functionDefinition | executeBlock ) SEMI? EOF
+    ;
+
 procedureDefinition
-    : ( CREATE ( OR ALTER )? | ALTER | RECREATE ) PROCEDURE identifier
-      inputParameters? outputParameters?
-      AS routineBody SEMI? EOF
+    : createOrAlter PROCEDURE identifier procedureSignature AS routineBody
+    ;
+
+functionDefinition
+    : createOrAlter FUNCTION identifier functionSignature AS routineBody
+    ;
+
+// EXECUTE BLOCK: os parâmetros de entrada são "nome tipo = ?", ligados pelo cliente.
+executeBlock
+    : EXECUTE BLOCK inputParameters? outputParameters? AS routineBody
+    ;
+
+// CREATE PACKAGE nome AS BEGIN <declarações> END (cabeçalho) ou CREATE PACKAGE BODY nome AS BEGIN <rotinas> END.
+packageDefinition
+    : createOrAlter PACKAGE BODY? identifier AS BEGIN packageRoutine* END SEMI? EOF
+    ;
+
+// No cabeçalho, só a assinatura; no corpo, a rotina inteira.
+packageRoutine
+    : PROCEDURE identifier procedureSignature ( AS routineBody | SEMI )
+    | FUNCTION identifier functionSignature ( AS routineBody | SEMI )
+    ;
+
+createOrAlter
+    : CREATE ( OR ALTER )?
+    | ALTER
+    | RECREATE
+    ;
+
+procedureSignature
+    : inputParameters? outputParameters?
+    ;
+
+// SQL SECURITY DEFINER | INVOKER no fim (as três palavras saem como IDENTIFIER). Sem NOT NULL antes, o returnType
+// engole o SQL SECURITY, e o AstBuilder o separa do tipo.
+functionSignature
+    : inputParameters? RETURNS returnType notNull? collation? DETERMINISTIC? sqlSecurity?
+    ;
+
+sqlSecurity
+    : IDENTIFIER IDENTIFIER IDENTIFIER
+    ;
+
+returnType
+    : returnTypePart+
+    ;
+
+returnTypePart
+    : ~( AS | NOT | COLLATE | DETERMINISTIC | SEMI | LPAREN | RPAREN )
+    | LPAREN ~RPAREN* RPAREN
     ;
 
 inputParameters
@@ -98,6 +150,8 @@ statement
     | fetchStatement
     | closeStatement
     | raiseStatement
+    | suspendStatement
+    | returnStatement
     | autonomousTransaction
     ;
 
@@ -128,6 +182,16 @@ closeStatement
 // EXCEPTION sozinho relança o erro do handler. A mensagem é qualquer expressão.
 raiseStatement
     : EXCEPTION ( identifier ( USING LPAREN expression ( COMMA expression )* RPAREN | expression )? )? SEMI
+    ;
+
+// SUSPEND não é reservada: SUSPEND = ... é atribuição a uma variável com esse nome.
+suspendStatement
+    : SUSPEND SEMI
+    ;
+
+// RETURN valor, só em function.
+returnStatement
+    : RETURN expression SEMI
     ;
 
 // Fatia DML: texto opaco até o ';'. O AstBuilder localiza os :var, os alvos do INTO e as cláusulas recusadas.
@@ -198,7 +262,8 @@ expressionContent
     ;
 
 // Palavras-chave não reservadas do Firebird, que podem ser nome de variável ou label. THEN, ELSE, WHILE, FOR,
-// OPEN, FETCH, CLOSE, CURSOR, USING e WHEN são reservadas. Manter em sincronia com AstBuilder.isIdentifier.
+// OPEN, FETCH, CLOSE, CURSOR, USING, WHEN, FUNCTION, RETURN e DETERMINISTIC são reservadas. Manter em sincronia
+// com AstBuilder.isIdentifier.
 identifier
     : IDENTIFIER
     | QUOTED_IDENTIFIER
@@ -211,4 +276,8 @@ identifier
     | IF
     | LEAVE
     | STATEMENT
+    | SUSPEND
+    | BLOCK
+    | BODY
+    | PACKAGE
     ;

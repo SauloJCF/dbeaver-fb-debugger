@@ -31,10 +31,12 @@ import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
-import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
 import dev.fbdebug.dbeaver.psql.ast.Raise;
+import dev.fbdebug.dbeaver.psql.ast.Return;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
 import dev.fbdebug.dbeaver.psql.ast.VariableDeclaration;
@@ -62,17 +64,128 @@ final class AstBuilder {
     private final TokenStream tokens;
     /** Construções recusadas achadas dentro de expressões, em qualquer ponto da Rotina. */
     private final List<UnsupportedUse> unsupported = new ArrayList<>();
+    /** A Rotina tem {@code SUSPEND}. Um builder monta uma Rotina só. */
+    private boolean suspends;
 
     AstBuilder(TokenStream tokens) {
         this.tokens = tokens;
     }
 
-    ProcedureDefinition procedure(PsqlParser.ProcedureDefinitionContext ctx) {
-        List<ParameterDeclaration> inputs = ctx.inputParameters() == null ? List.of()
-                : ctx.inputParameters().parameterDeclaration().stream().map(this::parameter).toList();
-        List<ParameterDeclaration> outputs = ctx.outputParameters() == null ? List.of()
-                : ctx.outputParameters().parameterDeclaration().stream().map(this::parameter).toList();
-        PsqlParser.RoutineBodyContext body = ctx.routineBody();
+    /** Procedure, function ou {@code EXECUTE BLOCK} avulsos. */
+    RoutineDefinition routine(PsqlParser.RoutineDefinitionContext ctx) {
+        if (ctx.procedureDefinition() != null) {
+            PsqlParser.ProcedureDefinitionContext procedure = ctx.procedureDefinition();
+            return procedure(null, name(procedure.identifier()), procedure.procedureSignature(),
+                    procedure.routineBody());
+        }
+        if (ctx.functionDefinition() != null) {
+            PsqlParser.FunctionDefinitionContext function = ctx.functionDefinition();
+            return function(null, name(function.identifier()), function.functionSignature(),
+                    function.routineBody());
+        }
+        PsqlParser.ExecuteBlockContext block = ctx.executeBlock();
+        List<ParameterDeclaration> inputs = block.inputParameters() == null ? List.of()
+                : block.inputParameters().parameterDeclaration().stream().map(this::blockInput).toList();
+        return routine(RoutineDefinition.Kind.EXECUTE_BLOCK, null, null, inputs, outputs(block.outputParameters()),
+                null, block.routineBody());
+    }
+
+    /**
+     * Rotina de um {@code CREATE PACKAGE BODY}.
+     *
+     * @return {@code null} se o corpo não tiver a rotina
+     */
+    RoutineDefinition packageRoutine(PsqlParser.PackageDefinitionContext ctx, RoutineDefinition.Kind kind,
+            String name) {
+        if (ctx.BODY() == null) {
+            throw new PsqlSyntaxException("esperado CREATE PACKAGE BODY", position(ctx));
+        }
+        PsqlParser.PackageRoutineContext routine = findPackageRoutine(ctx, kind, name);
+        if (routine == null) {
+            return null;
+        }
+        if (routine.routineBody() == null) {
+            throw new PsqlSyntaxException("rotina sem corpo no CREATE PACKAGE BODY: " + name, position(routine));
+        }
+        String packageName = name(ctx.identifier());
+        return kind == RoutineDefinition.Kind.FUNCTION
+                ? function(packageName, name, routine.functionSignature(), routine.routineBody())
+                : procedure(packageName, name, routine.procedureSignature(), routine.routineBody());
+    }
+
+    /**
+     * Parâmetros de entrada de uma rotina declarada num {@code CREATE PACKAGE} (cabeçalho), onde ficam os valores
+     * padrão.
+     *
+     * @return {@code null} se o cabeçalho não declarar a rotina (rotina privada)
+     */
+    List<ParameterDeclaration> packageRoutineInputs(PsqlParser.PackageDefinitionContext ctx,
+            RoutineDefinition.Kind kind, String name) {
+        PsqlParser.PackageRoutineContext routine = findPackageRoutine(ctx, kind, name);
+        if (routine == null) {
+            return null;
+        }
+        PsqlParser.InputParametersContext inputs = kind == RoutineDefinition.Kind.FUNCTION
+                ? routine.functionSignature().inputParameters()
+                : routine.procedureSignature().inputParameters();
+        return inputs(inputs);
+    }
+
+    private PsqlParser.PackageRoutineContext findPackageRoutine(PsqlParser.PackageDefinitionContext ctx,
+            RoutineDefinition.Kind kind, String name) {
+        for (PsqlParser.PackageRoutineContext routine : ctx.packageRoutine()) {
+            boolean function = routine.FUNCTION() != null;
+            if (function == (kind == RoutineDefinition.Kind.FUNCTION) && name.equals(name(routine.identifier()))) {
+                return routine;
+            }
+        }
+        return null;
+    }
+
+    private RoutineDefinition procedure(String packageName, String name, PsqlParser.ProcedureSignatureContext sig,
+            PsqlParser.RoutineBodyContext body) {
+        return routine(RoutineDefinition.Kind.PROCEDURE, packageName, name, inputs(sig.inputParameters()),
+                outputs(sig.outputParameters()), null, body);
+    }
+
+    private RoutineDefinition function(String packageName, String name, PsqlParser.FunctionSignatureContext sig,
+            PsqlParser.RoutineBodyContext body) {
+        if (sig.sqlSecurity() != null) {
+            sqlSecurity(sig.sqlSecurity().getStart().getTokenIndex(), sig.sqlSecurity().getStop().getTokenIndex());
+        }
+        // Sem NOT NULL, o SQL SECURITY fica no fim do returnType.
+        int typeStart = sig.returnType().getStart().getTokenIndex();
+        int typeEnd = sig.returnType().getStop().getTokenIndex();
+        List<Integer> visible = visible(typeStart, typeEnd);
+        int n = visible.size();
+        if (n > 3 && isWord(tokens.get(visible.get(n - 3)), "SQL")
+                && isWord(tokens.get(visible.get(n - 2)), "SECURITY")) {
+            sqlSecurity(visible.get(n - 3), typeEnd);
+            typeEnd = visible.get(n - 4);
+        }
+        ParameterDeclaration returnValue = new ParameterDeclaration(name,
+                tokens.getText(Interval.of(typeStart, typeEnd)), sig.notNull() != null, null,
+                position(sig.returnType()));
+        return routine(RoutineDefinition.Kind.FUNCTION, packageName, name, inputs(sig.inputParameters()), List.of(),
+                returnValue, body);
+    }
+
+    /**
+     * {@code SQL SECURITY DEFINER | INVOKER} nos tokens {@code [first, last]}. Não muda a execução: a Sessão de
+     * debug roda com o usuário dela.
+     */
+    private void sqlSecurity(int first, int last) {
+        List<Integer> words = visible(first, last);
+        if (words.size() != 3 || !isWord(tokens.get(words.get(0)), "SQL")
+                || !isWord(tokens.get(words.get(1)), "SECURITY") || !(isWord(tokens.get(words.get(2)), "DEFINER")
+                        || isWord(tokens.get(words.get(2)), "INVOKER"))) {
+            throw new PsqlSyntaxException("esperado SQL SECURITY DEFINER ou INVOKER", position(tokens.get(first)));
+        }
+    }
+
+    private RoutineDefinition routine(RoutineDefinition.Kind kind, String packageName, String name,
+            List<ParameterDeclaration> inputs, List<ParameterDeclaration> outputs, ParameterDeclaration returnValue,
+            PsqlParser.RoutineBodyContext body) {
         List<VariableDeclaration> variables = new ArrayList<>();
         List<CursorDeclaration> cursors = new ArrayList<>();
         for (PsqlParser.DeclarationContext declaration : body.declaration()) {
@@ -83,8 +196,26 @@ final class AstBuilder {
             }
         }
         Block block = block(body.block());
-        return new ProcedureDefinition(name(ctx.identifier()), inputs, outputs, variables, cursors, block,
-                unsupported);
+        return new RoutineDefinition(kind, packageName, name, inputs, outputs, returnValue, variables, cursors,
+                block, suspends, unsupported);
+    }
+
+    private List<ParameterDeclaration> inputs(PsqlParser.InputParametersContext ctx) {
+        return ctx == null ? List.of() : ctx.parameterDeclaration().stream().map(this::parameter).toList();
+    }
+
+    private List<ParameterDeclaration> outputs(PsqlParser.OutputParametersContext ctx) {
+        return ctx == null ? List.of() : ctx.parameterDeclaration().stream().map(this::parameter).toList();
+    }
+
+    /** Parâmetro de entrada de {@code EXECUTE BLOCK}: {@code nome tipo = ?}, sem valor padrão. */
+    private ParameterDeclaration blockInput(PsqlParser.ParameterDeclarationContext ctx) {
+        PsqlParser.DefaultValueContext binding = ctx.defaultValue();
+        if (binding == null || binding.EQ() == null || !text(binding.expression()).equals("?")) {
+            throw new PsqlSyntaxException("parâmetro de EXECUTE BLOCK sem '= ?'", position(ctx));
+        }
+        return new ParameterDeclaration(name(ctx.identifier()), text(ctx.typeSpec()), ctx.notNull() != null, null,
+                position(ctx));
     }
 
     private ParameterDeclaration parameter(PsqlParser.ParameterDeclarationContext ctx) {
@@ -227,6 +358,13 @@ final class AstBuilder {
         }
         if (ctx.raiseStatement() != null) {
             return raise(ctx.raiseStatement());
+        }
+        if (ctx.suspendStatement() != null) {
+            suspends = true;
+            return new Suspend(position(ctx.suspendStatement()));
+        }
+        if (ctx.returnStatement() != null) {
+            return new Return(expression(ctx.returnStatement().expression()), position(ctx.returnStatement()));
         }
         if (ctx.autonomousTransaction() != null) {
             return autonomousTransaction(ctx.autonomousTransaction());
@@ -705,7 +843,8 @@ final class AstBuilder {
         return switch (type) {
             case PsqlLexer.IDENTIFIER, PsqlLexer.QUOTED_IDENTIFIER, PsqlLexer.RECREATE, PsqlLexer.BREAK,
                     PsqlLexer.CONTINUE, PsqlLexer.DO, PsqlLexer.EXCEPTION, PsqlLexer.EXIT, PsqlLexer.IF,
-                    PsqlLexer.LEAVE, PsqlLexer.STATEMENT -> true;
+                    PsqlLexer.LEAVE, PsqlLexer.STATEMENT, PsqlLexer.SUSPEND, PsqlLexer.BLOCK, PsqlLexer.BODY,
+                    PsqlLexer.PACKAGE -> true;
             default -> false;
         };
     }

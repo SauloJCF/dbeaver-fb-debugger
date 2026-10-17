@@ -7,8 +7,8 @@ package dev.fbdebug.dbeaver.psql.ast;
  *
  * <p>
  * O que a gramática nem reconhece também é recusado pelo Pré-check, como trecho não reconhecido, com a posição
- * do erro de sintaxe. É o caso, por enquanto, de {@code SUSPEND}, {@code EXECUTE PROCEDURE} e sub-rotinas, que
- * entram nas próximas issues.
+ * do erro de sintaxe. É o caso, por enquanto, de {@code EXECUTE PROCEDURE} e sub-rotinas, que entram nas
+ * próximas issues.
  */
 public enum UnsupportedConstruct {
 

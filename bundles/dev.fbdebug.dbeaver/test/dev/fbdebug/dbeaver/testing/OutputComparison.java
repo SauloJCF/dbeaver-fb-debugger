@@ -29,19 +29,57 @@ public final class OutputComparison {
                     + " × interpretado=" + interpretedNames);
         }
         List<String> differences = new ArrayList<>();
-        for (int i = 0; i < nativeNames.size(); i++) {
-            Object expected = nativeValues.get(i);
-            Object actual = interpretedValues.get(i);
-            if (!Objects.deepEquals(expected, actual)) {
-                differences.add("  " + nativeNames.get(i) + ": nativo=" + describe(expected)
-                        + " × interpretado=" + describe(actual));
-            }
-        }
+        compareValues("", nativeNames, nativeValues, interpretedValues, differences);
         if (!differences.isEmpty()) {
             throw new AssertionError(call + ": " + differences.size()
                     + " saída(s) divergem entre a execução nativa e o Interpretador\n"
                     + String.join("\n", differences));
         }
+    }
+
+    /**
+     * Mesmas linhas de {@code SUSPEND}, na mesma ordem.
+     *
+     * @throws AssertionError com uma linha {@code linha n, nome: nativo=... × interpretado=...} por valor
+     *             divergente, e uma por linha que só um dos lados emitiu
+     */
+    public static void assertSameRows(String call, List<String> nativeNames, List<List<Object>> nativeRows,
+            List<String> interpretedNames, List<List<Object>> interpretedRows) {
+        if (!nativeNames.equals(interpretedNames)) {
+            throw new AssertionError(call + ": colunas diferentes: nativo=" + nativeNames + " × interpretado="
+                    + interpretedNames);
+        }
+        List<String> differences = new ArrayList<>();
+        int common = Math.min(nativeRows.size(), interpretedRows.size());
+        for (int i = 0; i < common; i++) {
+            compareValues("linha " + (i + 1) + ", ", nativeNames, nativeRows.get(i), interpretedRows.get(i),
+                    differences);
+        }
+        for (int i = common; i < nativeRows.size(); i++) {
+            differences.add("  linha " + (i + 1) + " só no nativo: " + describeRow(nativeRows.get(i)));
+        }
+        for (int i = common; i < interpretedRows.size(); i++) {
+            differences.add("  linha " + (i + 1) + " só no interpretado: " + describeRow(interpretedRows.get(i)));
+        }
+        if (!differences.isEmpty()) {
+            throw new AssertionError(call + ": linhas divergem entre a execução nativa (" + nativeRows.size()
+                    + " linha(s)) e o Interpretador (" + interpretedRows.size() + " linha(s))\n"
+                    + String.join("\n", differences));
+        }
+    }
+
+    private static void compareValues(String prefix, List<String> names, List<Object> expected,
+            List<Object> actual, List<String> differences) {
+        for (int i = 0; i < names.size(); i++) {
+            if (!Objects.deepEquals(expected.get(i), actual.get(i))) {
+                differences.add("  " + prefix + names.get(i) + ": nativo=" + describe(expected.get(i))
+                        + " × interpretado=" + describe(actual.get(i)));
+            }
+        }
+    }
+
+    private static String describeRow(List<Object> row) {
+        return row.stream().map(OutputComparison::describe).collect(Collectors.joining(", ", "[", "]"));
     }
 
     /**

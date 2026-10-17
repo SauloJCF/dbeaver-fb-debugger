@@ -320,11 +320,12 @@ class CursorDifferentialTest {
         try (Connection connection = database.connect()) {
             connection.setAutoCommit(false);
             var procedure =
-                    RoutineParser.parseProcedure(RoutineSourceLoader.loadProcedure(connection, "CUR_MUDA_VARIAVEL"));
+                    RoutineParser.parse(RoutineSourceLoader.loadProcedure(connection, "CUR_MUDA_VARIAVEL"));
 
             PsqlExecutionException error = assertThrows(PsqlExecutionException.class,
                     () -> new Interpreter(connection).execute(procedure, List.of(2)));
-            assertEquals("linha 4, coluna 1: alteração de variável usada pelo SELECT de um cursor aberto (MINIMO)"
+            // Linha do texto que o editor do DBeaver mostra: CREATE ... (MINIMO), RETURNS (, X, ), AS e o DECLARE.
+            assertEquals("linha 6, coluna 1: alteração de variável usada pelo SELECT de um cursor aberto (MINIMO)"
                     + " não é suportada pelo debugger", error.getMessage());
             connection.rollback();
         }
@@ -339,7 +340,7 @@ class CursorDifferentialTest {
         harness.assertSameOutputs("CUR_ABERTOS", false);
         try (Connection connection = database.connect()) {
             connection.setAutoCommit(false);
-            var procedure = RoutineParser.parseProcedure(RoutineSourceLoader.loadProcedure(connection, "CUR_ABERTOS"));
+            var procedure = RoutineParser.parse(RoutineSourceLoader.loadProcedure(connection, "CUR_ABERTOS"));
             Interpreter interpreter = new Interpreter(connection);
 
             int before = openStatements(connection);

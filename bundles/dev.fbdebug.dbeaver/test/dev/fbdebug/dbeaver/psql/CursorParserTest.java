@@ -20,7 +20,7 @@ import dev.fbdebug.dbeaver.psql.ast.Fetch;
 import dev.fbdebug.dbeaver.psql.ast.ForExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.ForSelect;
 import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
-import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
 import dev.fbdebug.dbeaver.psql.ast.VariableDeclaration;
@@ -91,7 +91,7 @@ class CursorParserTest {
 
     @Test
     void declaredCursorsWithAndWithoutScroll() {
-        ProcedureDefinition procedure = RoutineParser.parseProcedure("""
+        RoutineDefinition procedure = RoutineParser.parse("""
                 CREATE PROCEDURE P (A INTEGER)
                 AS
                 DECLARE VARIABLE X INTEGER;
@@ -164,7 +164,7 @@ class CursorParserTest {
     }
 
     private static List<Statement> statements(String body) {
-        return RoutineParser.parseProcedure("""
+        return RoutineParser.parse("""
                 CREATE PROCEDURE P (A INTEGER)
                 RETURNS (R INTEGER)
                 AS

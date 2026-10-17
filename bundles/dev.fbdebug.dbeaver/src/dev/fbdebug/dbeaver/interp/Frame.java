@@ -2,13 +2,18 @@ package dev.fbdebug.dbeaver.interp;
 
 import java.sql.SQLException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
+
+import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
 
 /**
  * Estado de uma Rotina em execução: variáveis visíveis (parâmetros de entrada, de saída e locais, na ordem
@@ -31,14 +36,59 @@ public final class Frame {
     private ErrorStatus handledError = ErrorStatus.NONE;
 
     private final SavepointStack savepoints;
+    private final Consumer<List<Object>> rows;
+    private final ParameterDeclaration returnValue;
+    private Object returned;
 
-    Frame(SavepointStack savepoints) {
+    /**
+     * @param rows destino das linhas do {@code SUSPEND}, ou {@code null} se a Rotina roda como executável
+     * @param returnValue tipo de retorno, se a Rotina é uma function; senão {@code null}
+     */
+    Frame(SavepointStack savepoints, Consumer<List<Object>> rows, ParameterDeclaration returnValue) {
         this.savepoints = savepoints;
+        this.rows = rows;
+        this.returnValue = returnValue;
+    }
+
+    /** Tipo de retorno da function; {@code null} nos outros tipos de Rotina. */
+    ParameterDeclaration returnValue() {
+        return returnValue;
+    }
+
+    /** Valor do {@code RETURN} executado; {@code null} antes dele. */
+    Object returned() {
+        return returned;
+    }
+
+    void returned(Object value) {
+        returned = value;
     }
 
     /** Savepoints dos blocos em execução. */
     SavepointStack savepoints() {
         return savepoints;
+    }
+
+    /** Destino das linhas do {@code SUSPEND} numa procedure selecionável; {@code null} num {@code EXECUTE PROCEDURE}. */
+    Consumer<List<Object>> rows() {
+        return rows;
+    }
+
+    /**
+     * Valores atuais dos parâmetros de saída, na ordem do {@code RETURNS}. Como no motor, {@code NULL} numa saída
+     * {@code NOT NULL} é erro, citando a primeira.
+     */
+    List<Object> outputValues() throws SQLException {
+        List<Object> values = new ArrayList<>();
+        for (Variable variable : variables.values()) {
+            if (variable.kind() == Variable.Kind.OUTPUT) {
+                if (variable.value() == null && variable.notNull()) {
+                    throw ServerErrors.nullInNotNullVariable(variable.name());
+                }
+                values.add(variable.value());
+            }
+        }
+        return values;
     }
 
     Variable declare(String name, String type, boolean notNull, Variable.Kind kind) {

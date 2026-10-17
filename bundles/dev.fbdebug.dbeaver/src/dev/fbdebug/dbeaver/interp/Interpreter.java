@@ -2,8 +2,10 @@ package dev.fbdebug.dbeaver.interp;
 
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
 
 import dev.fbdebug.dbeaver.psql.ast.Assignment;
 import dev.fbdebug.dbeaver.psql.ast.Block;
@@ -23,9 +25,11 @@ import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
-import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
 import dev.fbdebug.dbeaver.psql.ast.Raise;
+import dev.fbdebug.dbeaver.psql.ast.Return;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
 import dev.fbdebug.dbeaver.psql.ast.VariableDeclaration;
@@ -50,41 +54,81 @@ public final class Interpreter {
     }
 
     /**
-     * Executa a procedure como uma chamada do motor: se ela falhar, o que ela alterou é desfeito (savepoint), como
-     * no {@code EXECUTE PROCEDURE} nativo.
+     * Executa a Rotina como executável: uma procedure como no {@code EXECUTE PROCEDURE} nativo, uma function como
+     * no {@code SELECT f(...) FROM RDB$DATABASE}, um {@code EXECUTE BLOCK} sem {@code SUSPEND} como executado
+     * direto. Se ela falhar, o que ela alterou é desfeito (savepoint). Um {@code SUSPEND} devolve os valores das
+     * saídas e termina a Rotina, como no motor.
      *
      * @param inputs valores dos parâmetros de entrada, na ordem declarada; os que faltarem no fim usam o valor
      *            padrão do parâmetro
+     * @return as saídas; numa function, uma só, com o nome da function e o valor do {@code RETURN}
      */
-    public ProcedureResult execute(ProcedureDefinition procedure, List<?> inputs) throws SQLException {
-        return Savepoints.undoneOnError(connection, () -> run(procedure, inputs));
+    public ProcedureResult execute(RoutineDefinition routine, List<?> inputs) throws SQLException {
+        return call(routine, inputs, null);
     }
 
-    private ProcedureResult run(ProcedureDefinition procedure, List<?> inputs) throws SQLException {
-        refuse(procedure.unsupported());
-        if (inputs.size() > procedure.inputs().size()) {
-            throw new PsqlExecutionException(procedure.name() + " recebe " + procedure.inputs().size()
+    /**
+     * Executa a procedure selecionável como um {@code SELECT * FROM sp(...)} que lê todas as linhas: cada
+     * {@code SUSPEND} entrega a {@code rows}, na hora, os valores das saídas na ordem do {@code RETURNS}. O fim da
+     * Rotina não emite linha. Se ela falhar, as linhas já entregues ficam e só o que ela alterou depois do último
+     * {@code SUSPEND} é desfeito, como no motor, que desfaz apenas a busca em andamento.
+     *
+     * @param inputs como em {@link #execute}
+     */
+    public void select(RoutineDefinition routine, List<?> inputs, Consumer<List<Object>> rows)
+            throws SQLException {
+        call(routine, inputs, Objects.requireNonNull(rows));
+    }
+
+    private ProcedureResult call(RoutineDefinition routine, List<?> inputs, Consumer<List<Object>> rows)
+            throws SQLException {
+        SavepointStack savepoints = new SavepointStack(connection);
+        savepoints.beginCall();
+        ProcedureResult result;
+        try {
+            result = run(routine, inputs, new Frame(savepoints, rows, routine.returnValue()));
+        } catch (SQLException | RuntimeException e) {
+            savepoints.undoCall(e);
+            throw e;
+        }
+        savepoints.endCall();
+        return result;
+    }
+
+    /** @return as saídas, ou {@code null} se a Rotina roda como selecionável */
+    private ProcedureResult run(RoutineDefinition routine, List<?> inputs, Frame frame) throws SQLException {
+        refuse(routine.unsupported());
+        if (inputs.size() > routine.inputs().size()) {
+            throw new PsqlExecutionException(routine.displayName() + " recebe " + routine.inputs().size()
                     + " parâmetro(s) de entrada, mas foram informados " + inputs.size());
         }
-        Frame frame = new Frame(new SavepointStack(connection));
-        for (int i = 0; i < procedure.inputs().size(); i++) {
-            bindInput(frame, procedure.inputs().get(i), inputs, i);
+        for (int i = 0; i < routine.inputs().size(); i++) {
+            bindInput(frame, routine.inputs().get(i), inputs, i);
         }
-        for (ParameterDeclaration output : procedure.outputs()) {
+        for (ParameterDeclaration output : routine.outputs()) {
             frame.declare(output.name(), output.type(), output.notNull(), Variable.Kind.OUTPUT);
         }
-        for (VariableDeclaration local : procedure.declarations()) {
+        for (VariableDeclaration local : routine.declarations()) {
             Variable variable = frame.declare(local.name(), local.type(), local.notNull(), Variable.Kind.LOCAL);
             if (local.initialValue() != null) {
                 assign(variable, local.initialValue(), frame);
             }
         }
-        for (CursorDeclaration cursor : procedure.cursors()) {
+        for (CursorDeclaration cursor : routine.cursors()) {
             frame.declareCursor(new Cursor(cursor.name(), cursor.scroll(), cursor.select(), cursor.position()));
         }
 
+        ProcedureResult result = null;
         try {
-            execute(procedure.body(), frame); // o único desvio que chega aqui é o EXIT
+            execute(routine.body(), frame); // o único desvio que chega aqui é o EXIT (ou o RETURN)
+            // Na executável, o fim devolve as saídas e valida o NOT NULL delas, fora do alcance de qualquer WHEN.
+            // Na selecionável, o fim não emite linha nem valida nada.
+            if (routine.returnValue() != null) {
+                result = new ProcedureResult(List.of(routine.name()), Collections.singletonList(returned(frame)));
+            } else if (frame.rows() == null) {
+                result = new ProcedureResult(routine.outputs().stream().map(ParameterDeclaration::name).toList(),
+                        frame.outputValues());
+            }
         } catch (SQLException | RuntimeException e) {
             try {
                 frame.closeCursors();
@@ -94,14 +138,7 @@ public final class Interpreter {
             throw e;
         }
         frame.closeCursors(); // o motor fecha os cursores que a Rotina deixou abertos
-
-        List<String> names = new ArrayList<>();
-        List<Object> values = new ArrayList<>();
-        for (ParameterDeclaration output : procedure.outputs()) {
-            names.add(output.name());
-            values.add(frame.get(output.name()).value());
-        }
-        return new ProcedureResult(names, values);
+        return result;
     }
 
     private void bindInput(Frame frame, ParameterDeclaration input, List<?> inputs, int index)
@@ -177,6 +214,12 @@ public final class Interpreter {
             case Raise raise -> {
                 raise(raise, frame);
                 return null;
+            }
+            case Suspend suspend -> {
+                return suspend(frame);
+            }
+            case Return value -> {
+                return returnValue(value, frame);
             }
             case InAutonomousTransaction autonomous -> {
                 refuse(List.of(new UnsupportedUse(UnsupportedConstruct.IN_AUTONOMOUS_TRANSACTION,
@@ -368,6 +411,50 @@ public final class Interpreter {
         if (handled != null) {
             throw handled;
         }
+    }
+
+    /**
+     * {@code SUSPEND}: {@code NULL} numa saída {@code NOT NULL} é erro, que um {@code WHEN} pode tratar. Na
+     * selecionável, a linha é emitida e a Rotina continua; o que ela alterou até aqui não é mais desfeito
+     * ({@link SavepointStack#suspended()}). Num {@code EXECUTE PROCEDURE}, termina a Rotina como um {@code EXIT}.
+     */
+    private static Jump suspend(Frame frame) throws SQLException {
+        List<Object> row = frame.outputValues();
+        if (frame.rows() == null) {
+            return Jump.EXIT;
+        }
+        frame.rows().accept(Collections.unmodifiableList(row));
+        frame.savepoints().suspended();
+        return null;
+    }
+
+    /**
+     * {@code RETURN}: o valor é convertido para o tipo de retorno, como numa atribuição, e termina a function.
+     * {@code NULL} num retorno {@code NOT NULL} é erro ali mesmo, que um {@code WHEN} pode tratar.
+     */
+    private Jump returnValue(Return statement, Frame frame) throws SQLException {
+        ParameterDeclaration declared = frame.returnValue();
+        if (declared == null) {
+            throw new PsqlExecutionException(statement.position() + ": RETURN fora de function");
+        }
+        Object value = evaluator.evaluate(statement.value(), frame, declared.type());
+        if (value == null && declared.notNull()) {
+            throw ServerErrors.nullReturned();
+        }
+        frame.returned(value);
+        return Jump.EXIT;
+    }
+
+    /**
+     * Valor que a function devolve: o do {@code RETURN}, ou {@code NULL} se ela terminou sem {@code RETURN}. Nesse
+     * caso, um retorno {@code NOT NULL} é erro, fora do alcance de qualquer {@code WHEN}.
+     */
+    private static Object returned(Frame frame) throws SQLException {
+        Object value = frame.returned();
+        if (value == null && frame.returnValue().notNull()) {
+            throw ServerErrors.nullReturned();
+        }
+        return value;
     }
 
     /** @param row linha já convertida para os tipos dos alvos, ou {@code null} se não veio linha */

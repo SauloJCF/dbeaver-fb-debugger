@@ -122,7 +122,7 @@ class ExceptionParserTest {
     }
 
     private static List<Statement> statements(String body) {
-        return RoutineParser.parseProcedure("""
+        return RoutineParser.parse("""
                 CREATE PROCEDURE P (A INTEGER)
                 RETURNS (R INTEGER)
                 AS

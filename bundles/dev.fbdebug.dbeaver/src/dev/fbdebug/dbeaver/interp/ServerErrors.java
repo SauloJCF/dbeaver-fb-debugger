@@ -22,6 +22,15 @@ final class ServerErrors {
                 "validation error for variable " + variable + ", value \"*** null ***\"");
     }
 
+    /**
+     * {@code isc_not_valid_for}: {@code NULL} devolvido por function com retorno {@code NOT NULL}, no
+     * {@code RETURN} ou no fim. (Na mesma conexão, depois que um {@code WHEN} tratou esse erro uma vez, o motor
+     * passa a dizer "output parameter number 1" no erro do fim; a Sessão de debug começa em conexão nova.)
+     */
+    static SQLException nullReturned() {
+        return engineError("not_valid_for", "validation error for variable number 1, value \"*** null ***\"");
+    }
+
     /** {@code isc_cursor_not_open}: {@code FETCH} ou campo de um cursor fechado. */
     static SQLException cursorNotOpen() {
         return engineError("cursor_not_open", "Cursor is not open");

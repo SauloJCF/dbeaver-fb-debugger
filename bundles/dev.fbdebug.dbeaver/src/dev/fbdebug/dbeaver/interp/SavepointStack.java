@@ -22,7 +22,10 @@ import java.util.Iterator;
  * (o resto do handler fica sem a proteção dele). Ver {@link #nestedErrorHandled()}.</li>
  * </ul>
  * Os savepoints do servidor são criados só antes da primeira alteração de um nível, e só quando há embaixo um
- * bloco com {@code WHEN} que possa precisar desfazê-lo; sem isso, um erro desfaz a chamada inteira.
+ * bloco com {@code WHEN} que possa precisar desfazê-lo; sem isso, um erro desfaz a chamada inteira, pelo savepoint
+ * da chamada ({@link #beginCall()}).
+ * <p>
+ * Numa procedure selecionável, cada {@code SUSPEND} esvazia a pilha ({@link #suspended()}).
  */
 final class SavepointStack {
 
@@ -49,9 +52,45 @@ final class SavepointStack {
     /** Blocos cujo handler está em execução; o primeiro é o mais interno. */
     private final Deque<Level> handlers = new ArrayDeque<>();
     private long opened;
+    /** Savepoint da chamada: um erro que sai da Rotina desfaz o que ela fez (desde o último {@code SUSPEND}). */
+    private Savepoint call;
 
     SavepointStack(Connection connection) {
         this.connection = connection;
+    }
+
+    /** Início da chamada da Rotina, como o savepoint que o motor dá a um {@code EXECUTE PROCEDURE}. */
+    void beginCall() throws SQLException {
+        call = connection.setSavepoint();
+    }
+
+    /** Fim normal da chamada: o que ela alterou fica. */
+    void endCall() throws SQLException {
+        connection.releaseSavepoint(call);
+        call = null;
+    }
+
+    /** Erro que saiu da Rotina: desfaz o que ela alterou. Falha do rollback fica suprimida em {@code cause}. */
+    void undoCall(Exception cause) {
+        Savepoints.undo(connection, call, cause);
+        call = null;
+    }
+
+    /**
+     * {@code SUSPEND} de procedure selecionável. O motor passa para a busca da linha tudo o que a Rotina alterou até
+     * ali, em todos os níveis, e os níveis seguem abertos, mas vazios. Depois disso, um erro, tratado ou não, não
+     * desfaz mais o que veio antes do {@code SUSPEND}, e um {@code FOR SELECT} não conta essas alterações.
+     */
+    void suspended() throws SQLException {
+        for (Level level : levels) { // de cima para baixo: dos savepoints mais novos para os mais velhos
+            if (level.savepoint != null) {
+                connection.releaseSavepoint(level.savepoint);
+                level.savepoint = null;
+            }
+            level.changes = false;
+        }
+        connection.releaseSavepoint(call);
+        call = connection.setSavepoint();
     }
 
     /** @param catches bloco com {@code WHEN} */

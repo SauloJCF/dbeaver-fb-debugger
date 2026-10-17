@@ -19,8 +19,9 @@ import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.If;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
-import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
+import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.VariableDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.While;
 
@@ -41,7 +42,7 @@ class RoutineParserTest {
 
     @Test
     void headerKeepsParameterNamesAndDeclaredTypes() {
-        ProcedureDefinition procedure = RoutineParser.parseProcedure(SOURCE);
+        RoutineDefinition procedure = RoutineParser.parse(SOURCE);
 
         assertEquals("CALCULA", procedure.name());
         ParameterDeclaration a = procedure.inputs().get(0);
@@ -60,7 +61,7 @@ class RoutineParserTest {
 
     @Test
     void declarationsAcceptOptionalVariableKeywordAndBothInitializers() {
-        List<VariableDeclaration> declarations = RoutineParser.parseProcedure(SOURCE).declarations();
+        List<VariableDeclaration> declarations = RoutineParser.parse(SOURCE).declarations();
 
         assertEquals("FATOR", declarations.get(0).name());
         assertEquals("INTEGER", declarations.get(0).type());
@@ -72,7 +73,7 @@ class RoutineParserTest {
 
     @Test
     void everyStatementHasLineAndColumn() {
-        Block body = RoutineParser.parseProcedure(SOURCE).body();
+        Block body = RoutineParser.parse(SOURCE).body();
 
         assertEquals(new SourcePosition(6, 1), body.position());
         Assignment total = assertInstanceOf(Assignment.class, body.statements().get(0));
@@ -80,7 +81,7 @@ class RoutineParserTest {
         Block inner = assertInstanceOf(Block.class, body.statements().get(1));
         assertEquals(new SourcePosition(8, 3), inner.position());
         assertEquals(new SourcePosition(9, 5), inner.statements().get(0).position());
-        assertEquals(new SourcePosition(4, 1), RoutineParser.parseProcedure(SOURCE).declarations().get(0).position());
+        assertEquals(new SourcePosition(4, 1), RoutineParser.parse(SOURCE).declarations().get(0).position());
     }
 
     @Test
@@ -109,7 +110,7 @@ class RoutineParserTest {
 
     @Test
     void controlFlowStatementsKeepStructureLabelsAndPositions() {
-        Block body = RoutineParser.parseProcedure("""
+        Block body = RoutineParser.parse("""
                 CREATE PROCEDURE P AS
                 BEGIN
                   IF (X IS NULL) THEN X = 1; ELSE IF (X > 0) THEN EXIT;
@@ -147,7 +148,7 @@ class RoutineParserTest {
 
     @Test
     void danglingElseBelongsToTheNearestIf() {
-        If outer = (If) RoutineParser.parseProcedure("""
+        If outer = (If) RoutineParser.parse("""
                 CREATE PROCEDURE P AS
                 BEGIN
                   IF (A > 0) THEN IF (B > 0) THEN X = 1; ELSE X = 2;
@@ -159,7 +160,7 @@ class RoutineParserTest {
 
     @Test
     void nonReservedKeywordsWorkAsVariablesAndLabels() {
-        Block body = RoutineParser.parseProcedure("""
+        Block body = RoutineParser.parse("""
                 CREATE PROCEDURE P AS
                 DECLARE VARIABLE IF INTEGER;
                 DECLARE VARIABLE LEAVE INTEGER;
@@ -181,8 +182,26 @@ class RoutineParserTest {
     }
 
     @Test
+    void suspendIsAStatementAndAlsoAVariableName() {
+        Block body = RoutineParser.parse("""
+                CREATE PROCEDURE P RETURNS (SUSPEND INTEGER) AS
+                BEGIN
+                  SUSPEND = SUSPEND + 1;
+                  SUSPEND;
+                  WHILE (SUSPEND < 3) DO SUSPEND;
+                END""").body();
+
+        Assignment assignment = assertInstanceOf(Assignment.class, body.statements().get(0));
+        assertEquals("SUSPEND", assignment.target());
+        assertTrue(assignment.value().parts().contains(new Expression.Name("SUSPEND", "SUSPEND")));
+        assertEquals(new Suspend(new SourcePosition(4, 3)), body.statements().get(1));
+        While loop = assertInstanceOf(While.class, body.statements().get(2));
+        assertEquals(new Suspend(new SourcePosition(5, 26)), loop.body());
+    }
+
+    @Test
     void syntaxErrorReportsLineAndColumn() {
-        PsqlSyntaxException error = assertThrows(PsqlSyntaxException.class, () -> RoutineParser.parseProcedure("""
+        PsqlSyntaxException error = assertThrows(PsqlSyntaxException.class, () -> RoutineParser.parse("""
                 CREATE PROCEDURE P AS
                 BEGIN
                   X = 1;
@@ -193,7 +212,7 @@ class RoutineParserTest {
     }
 
     private static Expression assignmentValue(String source) {
-        Assignment assignment = (Assignment) RoutineParser.parseProcedure(source).body().statements().get(0);
+        Assignment assignment = (Assignment) RoutineParser.parse(source).body().statements().get(0);
         return assignment.value();
     }
 }

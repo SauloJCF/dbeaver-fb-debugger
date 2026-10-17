@@ -1,5 +1,8 @@
 package dev.fbdebug.dbeaver.psql;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -9,7 +12,8 @@ import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
 
-import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
+import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.parser.PsqlLexer;
 import dev.fbdebug.dbeaver.psql.parser.PsqlParser;
@@ -21,18 +25,68 @@ public final class RoutineParser {
     }
 
     /**
-     * @param text {@code CREATE [OR ALTER] PROCEDURE ...} completo
+     * @param text {@code CREATE [OR ALTER] PROCEDURE ...}, {@code CREATE [OR ALTER] FUNCTION ...} ou
+     *            {@code EXECUTE BLOCK ...} completo. As posições do AST são deste texto (linha 1 é a primeira dele).
      * @throws PsqlSyntaxException no primeiro trecho não reconhecido
      */
-    public static ProcedureDefinition parseProcedure(String text) {
-        PsqlLexer lexer = new PsqlLexer(CharStreams.fromString(text));
-        CommonTokenStream tokens = new CommonTokenStream(lexer);
-        PsqlParser parser = new PsqlParser(tokens);
-        lexer.removeErrorListeners();
-        lexer.addErrorListener(FailFast.INSTANCE);
-        parser.removeErrorListeners();
-        parser.addErrorListener(FailFast.INSTANCE);
-        return new AstBuilder(tokens).procedure(parser.procedureDefinition());
+    public static RoutineDefinition parse(String text) {
+        Parsing parsing = new Parsing(text);
+        return parsing.builder.routine(parsing.parser.routineDefinition());
+    }
+
+    /**
+     * Rotina de package. A Fonte do banco dela é o corpo da package inteiro: as posições do AST são do texto
+     * {@code body}. Os valores padrão dos parâmetros de entrada ficam no cabeçalho, e vêm de {@code header}.
+     *
+     * @param header {@code CREATE [OR ALTER] PACKAGE ...} completo
+     * @param body {@code CREATE | RECREATE PACKAGE BODY ...} completo
+     * @param kind {@link RoutineDefinition.Kind#PROCEDURE} ou {@link RoutineDefinition.Kind#FUNCTION}
+     * @param name nome normalizado da rotina (ver {@link Identifiers#normalize})
+     * @throws PsqlSyntaxException no primeiro trecho não reconhecido, ou se o corpo não tiver a rotina
+     */
+    public static RoutineDefinition parsePackageRoutine(String header, String body, RoutineDefinition.Kind kind,
+            String name) {
+        Parsing bodyParsing = new Parsing(body);
+        PsqlParser.PackageDefinitionContext bodyTree = bodyParsing.parser.packageDefinition();
+        RoutineDefinition routine = bodyParsing.builder.packageRoutine(bodyTree, kind, name);
+        if (routine == null) {
+            throw new PsqlSyntaxException("o corpo da package não tem a rotina " + name,
+                    new SourcePosition(1, 1));
+        }
+        Parsing headerParsing = new Parsing(header);
+        List<ParameterDeclaration> declared = headerParsing.builder.packageRoutineInputs(
+                headerParsing.parser.packageDefinition(), kind, name);
+        if (declared == null || declared.size() != routine.inputs().size()) {
+            return routine; // rotina privada: só existe no corpo
+        }
+        List<ParameterDeclaration> inputs = new ArrayList<>();
+        for (int i = 0; i < declared.size(); i++) {
+            ParameterDeclaration input = routine.inputs().get(i);
+            inputs.add(input.defaultValue() != null ? input
+                    : new ParameterDeclaration(input.name(), input.type(), input.notNull(),
+                            declared.get(i).defaultValue(), input.position()));
+        }
+        return new RoutineDefinition(routine.kind(), routine.packageName(), routine.name(), inputs,
+                routine.outputs(), routine.returnValue(), routine.declarations(), routine.cursors(), routine.body(),
+                routine.selectable(), routine.unsupported());
+    }
+
+    /** Léxico e parser de um texto, parando no primeiro erro. */
+    private static final class Parsing {
+
+        final PsqlParser parser;
+        final AstBuilder builder;
+
+        Parsing(String text) {
+            PsqlLexer lexer = new PsqlLexer(CharStreams.fromString(text));
+            CommonTokenStream tokens = new CommonTokenStream(lexer);
+            parser = new PsqlParser(tokens);
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(FailFast.INSTANCE);
+            parser.removeErrorListeners();
+            parser.addErrorListener(FailFast.INSTANCE);
+            builder = new AstBuilder(tokens);
+        }
     }
 
     private static final class FailFast extends BaseErrorListener {

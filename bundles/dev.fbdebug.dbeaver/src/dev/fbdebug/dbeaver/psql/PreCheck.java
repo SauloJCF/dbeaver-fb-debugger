@@ -24,10 +24,12 @@ import dev.fbdebug.dbeaver.psql.ast.If;
 import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
-import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
 import dev.fbdebug.dbeaver.psql.ast.Raise;
+import dev.fbdebug.dbeaver.psql.ast.Return;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
 import dev.fbdebug.dbeaver.psql.ast.While;
@@ -55,14 +57,14 @@ public final class PreCheck {
     }
 
     /**
-     * @param text {@code CREATE PROCEDURE ...} completo
+     * @param text procedure, function ou {@code EXECUTE BLOCK} completo (ver {@link RoutineParser#parse})
      * @return construções recusadas em ordem de posição; texto que não parseia dá um único item, na posição do
      *         erro
      */
     public static List<Finding> check(String text) {
-        ProcedureDefinition procedure;
+        RoutineDefinition procedure;
         try {
-            procedure = RoutineParser.parseProcedure(text);
+            procedure = RoutineParser.parse(text);
         } catch (PsqlSyntaxException e) {
             return List.of(new Finding(e.position(), "não suportado pelo debugger, " + e.detail()));
         }
@@ -70,7 +72,7 @@ public final class PreCheck {
     }
 
     /** @return construções recusadas do AST, em ordem de posição */
-    public static List<Finding> scan(ProcedureDefinition procedure) {
+    public static List<Finding> scan(RoutineDefinition procedure) {
         List<Finding> findings = new ArrayList<>();
         add(procedure.unsupported(), findings);
         for (CursorDeclaration cursor : procedure.cursors()) {
@@ -126,6 +128,10 @@ public final class PreCheck {
             case CloseCursor close -> {
             }
             case Raise raise -> {
+            }
+            case Suspend suspend -> {
+            }
+            case Return value -> {
             }
         }
     }
@@ -191,6 +197,10 @@ public final class PreCheck {
             case CloseCursor close -> {
             }
             case Raise raise -> {
+            }
+            case Suspend suspend -> {
+            }
+            case Return value -> {
             }
         }
     }

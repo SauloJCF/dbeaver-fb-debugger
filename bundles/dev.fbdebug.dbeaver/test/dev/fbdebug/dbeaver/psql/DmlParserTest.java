@@ -146,7 +146,7 @@ class DmlParserTest {
     }
 
     private static List<Statement> statements(String body) {
-        return RoutineParser.parseProcedure("""
+        return RoutineParser.parse("""
                 CREATE PROCEDURE P (ID INTEGER)
                 RETURNS (A INTEGER)
                 AS
