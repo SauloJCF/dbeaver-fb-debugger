@@ -19,6 +19,7 @@ class PreCheckTest {
                 CREATE PROCEDURE P (A INTEGER)
                 RETURNS (R VARCHAR(20))
                 AS
+                DECLARE CUR SCROLL CURSOR FOR (SELECT ID FROM T);
                 DECLARE VARIABLE I INTEGER = 0;
                 BEGIN
                   L: WHILE (I < A) DO
@@ -34,18 +35,75 @@ class PreCheckTest {
                   UPDATE OR INSERT INTO T (ID) VALUES (:A);
                   DELETE FROM T WHERE ID = :A;
                   EXECUTE STATEMENT ('SELECT 1 FROM RDB$DATABASE') WITH COMMON TRANSACTION INTO :I;
+                  FOR SELECT ID FROM T WHERE ID > :A INTO :I AS CURSOR C DO
+                    INSERT INTO LOG (ID, NOME) VALUES (:C.ID, :I);
+                  FOR EXECUTE STATEMENT 'SELECT ID FROM T' INTO :I DO
+                    R = R || :I;
+                  OPEN CUR;
+                  FETCH ABSOLUTE 2 FROM CUR INTO :I;
+                  CLOSE CUR;
+                  BEGIN
+                    EXCEPTION E_ERRO USING (:A, GDSCODE);
+                  WHEN EXCEPTION E_ERRO, SQLCODE -803 DO R = SQLSTATE;
+                  WHEN ANY DO EXCEPTION;
+                  END
                   EXIT;
                 END"""));
     }
 
     @Test
     void whereCurrentOf() {
-        // O cursor viria de um FOR SELECT ... AS CURSOR (issue 05); aqui só a Fatia DML importa.
-        assertRefused(UnsupportedConstruct.WHERE_CURRENT_OF, new SourcePosition(4, 5), """
+        assertRefused(UnsupportedConstruct.WHERE_CURRENT_OF, new SourcePosition(5, 7), """
                 CREATE PROCEDURE P AS
                 BEGIN
-                  UPDATE T SET X = 1
-                    WHERE /* posicionado */ CURRENT OF C;
+                  FOR SELECT ID FROM T FOR UPDATE AS CURSOR C DO
+                    UPDATE T SET X = 1
+                      WHERE /* posicionado */ CURRENT OF C;
+                END""");
+    }
+
+    @Test
+    void variableOfTheSelectChangedInsideTheForLoop() {
+        List<PreCheck.Finding> findings = PreCheck.check("""
+                CREATE PROCEDURE P (LIMITE INTEGER) RETURNS (X INTEGER, T INTEGER) AS
+                DECLARE Y INTEGER;
+                BEGIN
+                  FOR SELECT ID FROM T WHERE ID <= :LIMITE AND ID > :X INTO :X DO
+                  BEGIN
+                    T = X;
+                    IF (X > 2) THEN LIMITE = 0;
+                    SELECT 1 FROM RDB$DATABASE INTO :T;
+                    FOR SELECT ID FROM T INTO :LIMITE DO Y = 1;
+                  END
+                  LIMITE = 5;
+                END""");
+
+        assertEquals(List.of(new SourcePosition(4, 7), new SourcePosition(7, 21), new SourcePosition(9, 5)),
+                findings.stream().map(PreCheck.Finding::position).toList());
+        assertTrue(findings.stream().allMatch(finding -> finding.description()
+                .startsWith(UnsupportedConstruct.CURSOR_VARIABLE_CHANGED.syntax())));
+    }
+
+    @Test
+    void rowCountInsideTheSelectOfADeclaredCursor() {
+        assertRefused(UnsupportedConstruct.ROW_COUNT_IN_DML, new SourcePosition(2, 50), """
+                CREATE PROCEDURE P AS
+                DECLARE C CURSOR FOR (SELECT ID FROM T WHERE X = ROW_COUNT);
+                BEGIN
+                  OPEN C;
+                END""");
+    }
+
+    @Test
+    void rdbErrorInsideAHandler() {
+        assertRefused(UnsupportedConstruct.RDB_ERROR, new SourcePosition(6, 9), """
+                CREATE PROCEDURE P RETURNS (R VARCHAR(100)) AS
+                BEGIN
+                  BEGIN
+                    R = 1 / 0;
+                  WHEN ANY DO
+                    R = RDB$ERROR(MESSAGE);
+                  END
                 END""");
     }
 
@@ -123,14 +181,13 @@ class PreCheckTest {
                 DECLARE X INTEGER;
                 BEGIN
                   X = 1;
-                  FOR SELECT ID FROM T INTO :X DO
-                    X = X + 1;
+                  EXECUTE PROCEDURE OUTRA (:X);
                 END""");
 
         assertEquals(1, findings.size());
         PreCheck.Finding finding = findings.get(0);
-        assertEquals(new SourcePosition(5, 7), finding.position());
-        assertTrue(finding.description().contains("'FOR' (linha 5, coluna 3)"), finding.description());
+        assertEquals(new SourcePosition(5, 11), finding.position());
+        assertTrue(finding.description().contains("'EXECUTE' (linha 5, coluna 3)"), finding.description());
     }
 
     private static void assertRefused(UnsupportedConstruct construct, SourcePosition position, String source) {

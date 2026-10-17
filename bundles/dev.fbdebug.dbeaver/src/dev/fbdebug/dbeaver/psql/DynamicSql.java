@@ -29,6 +29,18 @@ public final class DynamicSql {
         }
     }
 
+    /** Se o texto é uma consulta ({@code SELECT} ou {@code WITH}), que não altera dados. */
+    public static boolean isQuery(String sql) {
+        PsqlLexer lexer = new PsqlLexer(CharStreams.fromString(sql));
+        lexer.removeErrorListeners();
+        for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
+            if (token.getChannel() == Token.DEFAULT_CHANNEL && token.getType() != PsqlLexer.LPAREN) {
+                return token.getType() == PsqlLexer.SELECT || token.getType() == PsqlLexer.WITH;
+            }
+        }
+        return false;
+    }
+
     /**
      * Troca cada {@code :nome} por {@code ?}, como o motor faz antes de preparar o statement dinâmico. Literais e
      * comentários ficam como estão.

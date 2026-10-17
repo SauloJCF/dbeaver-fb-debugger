@@ -49,7 +49,7 @@ Depurar Rotinas PSQL do Firebird 5 dentro do DBeaver CE, com breakpoints, step e
 - Ao terminar ou abortar: rollback, a menos que "commit ao terminar" esteja marcado.
 - Interpretador sobre AST de gramática ANTLR4 da camada procedural; Fatias DML opacas, com `:var` → `?` e alvos de `INTO` capturados.
 - Toda expressão avaliada via `SELECT <expr> FROM RDB$DATABASE` com `CAST(? AS <tipo>)`.
-- Blocos com `WHEN` emulam o savepoint implícito (`SAVEPOINT` / `ROLLBACK TO SAVEPOINT`); erros do servidor mapeados para `GDSCODE`/`SQLCODE`/`SQLSTATE`.
+- Blocos com `WHEN` emulam o savepoint implícito (`SAVEPOINT` / `ROLLBACK TO SAVEPOINT`) como o motor: um erro tratado desfaz o statement em andamento do bloco, não o que os statements já terminados fizeram. Erros do servidor mapeados para `GDSCODE`/`SQLCODE`/`SQLSTATE`.
 - Package temporário `DBG$...` removido ao fim; restos varridos ao abrir sessão.
 
 ## Fora do MVP

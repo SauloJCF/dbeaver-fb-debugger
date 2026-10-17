@@ -2,10 +2,17 @@ package dev.fbdebug.dbeaver.psql.ast;
 
 import java.util.List;
 
-/** {@code BEGIN ... END}. */
-public record Block(List<Statement> statements, SourcePosition position) implements Statement {
+/**
+ * {@code BEGIN ... [WHEN ... DO ...] END}.
+ *
+ * @param handlers cláusulas {@code WHEN} do fim do bloco, na ordem; com alguma, o bloco tem o savepoint implícito
+ *            do motor
+ */
+public record Block(List<Statement> statements, List<Handler> handlers, SourcePosition position)
+        implements Statement {
 
     public Block {
         statements = List.copyOf(statements);
+        handlers = List.copyOf(handlers);
     }
 }

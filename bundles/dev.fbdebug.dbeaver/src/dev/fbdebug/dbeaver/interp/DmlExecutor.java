@@ -5,16 +5,19 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 import dev.fbdebug.dbeaver.psql.DynamicSql;
 import dev.fbdebug.dbeaver.psql.ast.DmlStatement;
 import dev.fbdebug.dbeaver.psql.ast.ExecuteStatement;
+import dev.fbdebug.dbeaver.psql.ast.Expression;
 
 /**
- * Executa Fatias DML e {@code EXECUTE STATEMENT} local no servidor, na transação da Sessão de debug, e mantém o
- * {@code ROW_COUNT} do {@link Frame}.
+ * Executa Fatias DML e {@code EXECUTE STATEMENT} local no servidor, na transação da Sessão de debug, abre os
+ * cursores e mantém o {@code ROW_COUNT} do {@link Frame}.
  */
 final class DmlExecutor {
 
@@ -34,23 +37,32 @@ final class DmlExecutor {
      */
     List<Object> execute(DmlStatement dml, Frame frame) throws SQLException {
         BoundSql bound = BoundSql.bind(dml.sql(), frame);
+        if (dml.kind() == DmlStatement.Kind.SELECT) {
+            List<Object> row = singleRow(bound.sql(), bound.parameters(), dml.into().size());
+            frame.rowsFetched(row == null ? 0 : 1);
+            return row == null ? null : assignable(row, dml.into(), frame);
+        }
+        SavepointStack savepoints = frame.savepoints();
+        savepoints.beforeChange();
+        long rows;
+        List<Object> row = null;
         if (dml.into().isEmpty() && dml.kind() == DmlStatement.Kind.MERGE) {
-            frame.rowCount(mergedRows(bound));
-            return null;
-        }
-        if (dml.into().isEmpty()) {
+            rows = mergedRows(bound);
+        } else if (dml.into().isEmpty()) {
             try (PreparedStatement statement = Statements.prepare(connection, bound.sql(), bound.parameters())) {
-                frame.rowCount(statement.executeUpdate());
+                rows = statement.executeUpdate();
             }
-            return null;
+        } else {
+            // No RETURNING, o DML já aconteceu quando a segunda linha aparece; o motor desfaz o statement inteiro.
+            row = Savepoints.undoneOnError(connection,
+                    () -> singleRow(bound.sql(), bound.parameters(), dml.into().size()));
+            rows = row == null ? 0 : 1;
         }
-        Savepoints.SqlCall<List<Object>> read =
-                () -> singleRow(bound.sql(), bound.parameters(), dml.into().size());
-        // No RETURNING, o DML já aconteceu quando a segunda linha aparece; o motor desfaz o statement inteiro.
-        List<Object> row = dml.kind() == DmlStatement.Kind.SELECT ? read.run()
-                : Savepoints.undoneOnError(connection, read);
-        frame.rowCount(row == null ? 0 : 1);
-        return row == null ? null : evaluator.assignable(row, types(dml.into(), frame));
+        frame.rowsModified(rows);
+        if (rows > 0) {
+            savepoints.changed();
+        }
+        return row == null ? null : assignable(row, dml.into(), frame);
     }
 
     /**
@@ -59,6 +71,61 @@ final class DmlExecutor {
      * @return como em {@link #execute(DmlStatement, Frame)}
      */
     List<Object> execute(ExecuteStatement execute, Frame frame) throws SQLException {
+        Dynamic dynamic = dynamic(execute, frame);
+        boolean query = DynamicSql.isQuery(dynamic.sql());
+        if (!query) {
+            frame.savepoints().beforeChange();
+        }
+        boolean changed;
+        List<Object> row = null;
+        if (execute.into().isEmpty()) {
+            try (PreparedStatement statement = Statements.prepare(connection, dynamic.sql(), dynamic.parameters())) {
+                boolean results = statement.execute();
+                // Sem contagem de linhas (-1) ou com resultado não há como saber se alterou: conta como alteração.
+                changed = !query && (results || statement.getUpdateCount() != 0);
+            }
+        } else {
+            row = Savepoints.undoneOnError(connection,
+                    () -> singleRow(dynamic.sql(), dynamic.parameters(), execute.into().size()));
+            changed = !query;
+        }
+        if (changed) {
+            frame.savepoints().changed();
+        }
+        return row == null ? null : assignable(row, execute.into(), frame);
+    }
+
+    /** Abre o cursor de um {@code FOR SELECT} ou {@code OPEN}, com os {@code :var} valendo o que valem agora. */
+    void open(Cursor cursor, DmlStatement select, Frame frame) throws SQLException {
+        BoundSql bound = BoundSql.bind(select.sql(), frame);
+        Set<String> variables = new HashSet<>();
+        for (Expression.Part part : select.sql().parts()) {
+            if (part instanceof Expression.Name name && frame.find(name.name()).isPresent()) {
+                variables.add(name.name());
+            }
+        }
+        cursor.open(connection, bound.sql(), bound.parameters(), variables);
+    }
+
+    /**
+     * Abre o cursor de um {@code FOR EXECUTE STATEMENT}. Os parâmetros são de outro statement e o motor os avalia
+     * uma vez só, como aqui.
+     */
+    void open(Cursor cursor, ExecuteStatement execute, Frame frame) throws SQLException {
+        Dynamic dynamic = dynamic(execute, frame);
+        cursor.open(connection, dynamic.sql(), dynamic.parameters(), Set.of());
+    }
+
+    /** Linha lida do servidor convertida para os tipos dos alvos do {@code INTO}, como numa atribuição. */
+    List<Object> assignable(List<Object> row, List<String> targets, Frame frame) throws SQLException {
+        return evaluator.assignable(row, targets.stream().map(target -> frame.get(target).type()).toList());
+    }
+
+    /** Texto e parâmetros de um statement dinâmico. */
+    private record Dynamic(String sql, List<Object> parameters) {
+    }
+
+    private Dynamic dynamic(ExecuteStatement execute, Frame frame) throws SQLException {
         Object text = evaluator.value(execute.sql(), frame);
         if (text == null) {
             throw new PsqlExecutionException("EXECUTE STATEMENT com texto NULL");
@@ -81,16 +148,7 @@ final class DmlExecutor {
                 parameters.add(evaluator.value(parameter.value(), frame));
             }
         }
-        if (execute.into().isEmpty()) {
-            try (PreparedStatement statement = Statements.prepare(connection, sql, parameters)) {
-                statement.execute();
-            }
-            return null;
-        }
-        String dynamicSql = sql;
-        List<Object> row = Savepoints.undoneOnError(connection,
-                () -> singleRow(dynamicSql, parameters, execute.into().size()));
-        return row == null ? null : evaluator.assignable(row, types(execute.into(), frame));
+        return new Dynamic(sql, parameters);
     }
 
     /**
@@ -130,9 +188,5 @@ final class DmlExecutor {
                 return row;
             }
         }
-    }
-
-    private static List<String> types(List<String> targets, Frame frame) {
-        return targets.stream().map(target -> frame.get(target).type()).toList();
     }
 }

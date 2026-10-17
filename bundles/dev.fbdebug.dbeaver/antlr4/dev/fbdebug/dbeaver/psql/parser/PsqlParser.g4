@@ -33,18 +33,25 @@ routineBody
 
 declaration
     : variableDeclaration
+    | cursorDeclaration
     ;
 
 variableDeclaration
     : DECLARE VARIABLE? identifier typeSpec notNull? collation? defaultValue? SEMI
     ;
 
+// DECLARE c [SCROLL | NO SCROLL] CURSOR FOR (SELECT ...); SCROLL e NO são conferidos pelo AstBuilder.
+cursorDeclaration
+    : DECLARE identifier ( IDENTIFIER IDENTIFIER? )? CURSOR FOR LPAREN expressionContent* RPAREN SEMI
+    ;
+
 typeSpec
     : typePart+
     ;
 
+// CURSOR nunca faz parte de um tipo: é o que separa a declaração de cursor da de variável.
 typePart
-    : ~( EQ | DEFAULT | NOT | COLLATE | COMMA | SEMI | LPAREN | RPAREN )
+    : ~( EQ | DEFAULT | NOT | COLLATE | COMMA | SEMI | LPAREN | RPAREN | CURSOR )
     | LPAREN ~RPAREN* RPAREN
     ;
 
@@ -61,7 +68,19 @@ defaultValue
     ;
 
 block
-    : BEGIN statement* END SEMI?
+    : BEGIN statement* handler* END SEMI?
+    ;
+
+// WHEN <condição>, ... DO statement, no fim do bloco.
+handler
+    : WHEN errorCondition ( COMMA errorCondition )* DO statement
+    ;
+
+// EXCEPTION nome, SQLCODE [-]n, GDSCODE nome, SQLSTATE 'xxxxx' ou ANY. SQLCODE, GDSCODE, SQLSTATE e ANY são
+// reservadas (saem como IDENTIFIER) e o AstBuilder confere qual veio.
+errorCondition
+    : EXCEPTION identifier
+    | IDENTIFIER ( OPERATOR? NUMBER | IDENTIFIER | STRING )?
     ;
 
 statement
@@ -69,12 +88,46 @@ statement
     | assignment
     | ifStatement
     | whileStatement
+    | forStatement
     | leaveStatement
     | continueStatement
     | exitStatement
     | dmlStatement
     | executeStatement
+    | openStatement
+    | fetchStatement
+    | closeStatement
+    | raiseStatement
     | autonomousTransaction
+    ;
+
+// FOR SELECT ... [INTO ...] [AS CURSOR c] DO e FOR EXECUTE STATEMENT ... INTO ... DO. Texto opaco até o DO; o
+// AstBuilder separa o SELECT (ou o EXECUTE STATEMENT), os alvos do INTO e o nome do cursor.
+forStatement
+    : label? FOR ( SELECT | WITH | EXECUTE ) forContent* DO statement
+    ;
+
+forContent
+    : LPAREN expressionContent* RPAREN
+    | ~( DO | LPAREN | RPAREN | SEMI )
+    ;
+
+openStatement
+    : OPEN identifier SEMI
+    ;
+
+// FETCH [NEXT | PRIOR | FIRST | LAST | ABSOLUTE n | RELATIVE n FROM] c [INTO ...]; separado pelo AstBuilder.
+fetchStatement
+    : FETCH ~SEMI+ SEMI
+    ;
+
+closeStatement
+    : CLOSE identifier SEMI
+    ;
+
+// EXCEPTION sozinho relança o erro do handler. A mensagem é qualquer expressão.
+raiseStatement
+    : EXCEPTION ( identifier ( USING LPAREN expression ( COMMA expression )* RPAREN | expression )? )? SEMI
     ;
 
 // Fatia DML: texto opaco até o ';'. O AstBuilder localiza os :var, os alvos do INTO e as cláusulas recusadas.
@@ -144,8 +197,8 @@ expressionContent
     | ~( LPAREN | RPAREN )
     ;
 
-// Palavras-chave não reservadas do Firebird, que podem ser nome de variável ou label. THEN, ELSE e WHILE são
-// reservadas. Manter em sincronia com AstBuilder.isIdentifier.
+// Palavras-chave não reservadas do Firebird, que podem ser nome de variável ou label. THEN, ELSE, WHILE, FOR,
+// OPEN, FETCH, CLOSE, CURSOR, USING e WHEN são reservadas. Manter em sincronia com AstBuilder.isIdentifier.
 identifier
     : IDENTIFIER
     | QUOTED_IDENTIFIER
@@ -153,6 +206,7 @@ identifier
     | BREAK
     | CONTINUE
     | DO
+    | EXCEPTION
     | EXIT
     | IF
     | LEAVE

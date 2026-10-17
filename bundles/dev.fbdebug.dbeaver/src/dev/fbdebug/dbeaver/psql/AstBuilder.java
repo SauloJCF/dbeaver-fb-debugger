@@ -2,24 +2,37 @@ package dev.fbdebug.dbeaver.psql;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import dev.fbdebug.dbeaver.psql.ast.Assignment;
 import dev.fbdebug.dbeaver.psql.ast.Block;
+import dev.fbdebug.dbeaver.psql.ast.CloseCursor;
 import dev.fbdebug.dbeaver.psql.ast.Continue;
+import dev.fbdebug.dbeaver.psql.ast.CursorDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.DmlStatement;
+import dev.fbdebug.dbeaver.psql.ast.ErrorCondition;
 import dev.fbdebug.dbeaver.psql.ast.ExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.Exit;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
+import dev.fbdebug.dbeaver.psql.ast.Fetch;
+import dev.fbdebug.dbeaver.psql.ast.ForExecuteStatement;
+import dev.fbdebug.dbeaver.psql.ast.ForSelect;
+import dev.fbdebug.dbeaver.psql.ast.Handler;
 import dev.fbdebug.dbeaver.psql.ast.If;
 import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
+import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.ProcedureDefinition;
+import dev.fbdebug.dbeaver.psql.ast.Raise;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
@@ -36,11 +49,19 @@ final class AstBuilder {
     private enum Candidates {
         /** Expressão PSQL: qualquer identificador solto, com ou sem {@code :}. */
         PSQL,
-        /** Fatia DML: só {@code :var}, porque o servidor recusa variável sem {@code :} em DML. */
+        /**
+         * Fatia DML: só {@code :var} (o servidor recusa variável sem {@code :} em DML) e as variáveis de contexto
+         * de erro, que só existem em PSQL.
+         */
         DML
     }
 
+    /** Variáveis de contexto do handler, que valem também dentro de uma Fatia DML. */
+    private static final Set<String> ERROR_CONTEXT = Set.of("GDSCODE", "SQLCODE", "SQLSTATE");
+
     private final TokenStream tokens;
+    /** Construções recusadas achadas dentro de expressões, em qualquer ponto da Rotina. */
+    private final List<UnsupportedUse> unsupported = new ArrayList<>();
 
     AstBuilder(TokenStream tokens) {
         this.tokens = tokens;
@@ -52,10 +73,18 @@ final class AstBuilder {
         List<ParameterDeclaration> outputs = ctx.outputParameters() == null ? List.of()
                 : ctx.outputParameters().parameterDeclaration().stream().map(this::parameter).toList();
         PsqlParser.RoutineBodyContext body = ctx.routineBody();
-        List<VariableDeclaration> declarations = body.declaration().stream()
-                .map(d -> variable(d.variableDeclaration()))
-                .toList();
-        return new ProcedureDefinition(name(ctx.identifier()), inputs, outputs, declarations, block(body.block()));
+        List<VariableDeclaration> variables = new ArrayList<>();
+        List<CursorDeclaration> cursors = new ArrayList<>();
+        for (PsqlParser.DeclarationContext declaration : body.declaration()) {
+            if (declaration.cursorDeclaration() != null) {
+                cursors.add(cursor(declaration.cursorDeclaration()));
+            } else {
+                variables.add(variable(declaration.variableDeclaration()));
+            }
+        }
+        Block block = block(body.block());
+        return new ProcedureDefinition(name(ctx.identifier()), inputs, outputs, variables, cursors, block,
+                unsupported);
     }
 
     private ParameterDeclaration parameter(PsqlParser.ParameterDeclarationContext ctx) {
@@ -68,12 +97,82 @@ final class AstBuilder {
                 defaultValue(ctx.defaultValue()), position(ctx));
     }
 
+    private CursorDeclaration cursor(PsqlParser.CursorDeclarationContext ctx) {
+        String option = ctx.IDENTIFIER().stream()
+                .map(word -> word.getText().toUpperCase(Locale.ROOT))
+                .collect(Collectors.joining(" "));
+        boolean scroll = switch (option) {
+            case "" , "NO SCROLL" -> false;
+            case "SCROLL" -> true;
+            default -> throw new PsqlSyntaxException("esperado SCROLL ou NO SCROLL antes de CURSOR",
+                    position(ctx.IDENTIFIER(0).getSymbol()));
+        };
+        Token open = ctx.LPAREN().getSymbol();
+        Token close = ctx.RPAREN().getSymbol();
+        List<Integer> visible = visible(open.getTokenIndex() + 1, close.getTokenIndex() - 1);
+        Token first = visible.isEmpty() ? close : tokens.get(visible.get(0));
+        if (first.getType() != PsqlLexer.SELECT && first.getType() != PsqlLexer.WITH) {
+            throw new PsqlSyntaxException("esperado o SELECT do cursor", position(first));
+        }
+        DmlStatement select = dml(first.getTokenIndex(), close.getTokenIndex() - 1, position(first));
+        if (!select.into().isEmpty()) {
+            throw new PsqlSyntaxException("o SELECT de um cursor declarado não tem INTO", position(first));
+        }
+        return new CursorDeclaration(name(ctx.identifier()), scroll, select, position(ctx));
+    }
+
     private Expression defaultValue(PsqlParser.DefaultValueContext ctx) {
         return ctx == null ? null : expression(ctx.expression());
     }
 
     private Block block(PsqlParser.BlockContext ctx) {
-        return new Block(ctx.statement().stream().map(this::statement).toList(), position(ctx));
+        return new Block(ctx.statement().stream().map(this::statement).toList(),
+                ctx.handler().stream().map(this::handler).toList(), position(ctx));
+    }
+
+    private Handler handler(PsqlParser.HandlerContext ctx) {
+        return new Handler(ctx.errorCondition().stream().map(this::errorCondition).toList(),
+                statement(ctx.statement()), position(ctx));
+    }
+
+    private ErrorCondition errorCondition(PsqlParser.ErrorConditionContext ctx) {
+        if (ctx.EXCEPTION() != null) {
+            return new ErrorCondition.UserException(name(ctx.identifier()));
+        }
+        Token word = ctx.IDENTIFIER(0).getSymbol();
+        switch (word.getText().toUpperCase(Locale.ROOT)) {
+            case "ANY" -> {
+                if (ctx.getChildCount() == 1) {
+                    return new ErrorCondition.AnyError();
+                }
+            }
+            case "SQLCODE" -> {
+                if (ctx.NUMBER() != null) {
+                    int code = Integer.parseInt(ctx.NUMBER().getText());
+                    TerminalNode sign = ctx.OPERATOR();
+                    if (sign == null || sign.getText().equals("+")) {
+                        return new ErrorCondition.SqlCode(code);
+                    }
+                    if (sign.getText().equals("-")) {
+                        return new ErrorCondition.SqlCode(-code);
+                    }
+                }
+            }
+            case "GDSCODE" -> {
+                if (ctx.IDENTIFIER().size() == 2) {
+                    return new ErrorCondition.GdsCode(ctx.IDENTIFIER(1).getText());
+                }
+            }
+            case "SQLSTATE" -> {
+                if (ctx.STRING() != null) {
+                    String literal = ctx.STRING().getText();
+                    return new ErrorCondition.SqlState(literal.substring(1, literal.length() - 1));
+                }
+            }
+            default -> {
+            }
+        }
+        throw new PsqlSyntaxException("condição de WHEN não reconhecida: '" + text(ctx) + "'", position(word));
     }
 
     private Statement statement(PsqlParser.StatementContext ctx) {
@@ -93,8 +192,11 @@ final class AstBuilder {
         }
         if (ctx.whileStatement() != null) {
             PsqlParser.WhileStatementContext loop = ctx.whileStatement();
-            return new While(loop.label() == null ? null : name(loop.label().identifier()),
-                    expression(loop.condition()), statement(loop.statement()), position(loop));
+            return new While(label(loop.label()), expression(loop.condition()), statement(loop.statement()),
+                    position(loop));
+        }
+        if (ctx.forStatement() != null) {
+            return forStatement(ctx.forStatement());
         }
         if (ctx.leaveStatement() != null) {
             PsqlParser.LeaveStatementContext leave = ctx.leaveStatement();
@@ -105,10 +207,26 @@ final class AstBuilder {
             return new Continue(optionalName(next.identifier()), position(next));
         }
         if (ctx.dmlStatement() != null) {
-            return dml(ctx.dmlStatement());
+            PsqlParser.DmlStatementContext dml = ctx.dmlStatement();
+            return dml(dml.getStart().getTokenIndex(), dml.getStop().getTokenIndex() - 1, position(dml));
         }
         if (ctx.executeStatement() != null) {
-            return executeStatement(ctx.executeStatement());
+            PsqlParser.ExecuteStatementContext execute = ctx.executeStatement();
+            Token semi = execute.getStop();
+            return executeStatement(execute.getStart().getTokenIndex(), semi.getTokenIndex() - 1, semi,
+                    position(execute));
+        }
+        if (ctx.openStatement() != null) {
+            return new OpenCursor(name(ctx.openStatement().identifier()), position(ctx.openStatement()));
+        }
+        if (ctx.fetchStatement() != null) {
+            return fetch(ctx.fetchStatement());
+        }
+        if (ctx.closeStatement() != null) {
+            return new CloseCursor(name(ctx.closeStatement().identifier()), position(ctx.closeStatement()));
+        }
+        if (ctx.raiseStatement() != null) {
+            return raise(ctx.raiseStatement());
         }
         if (ctx.autonomousTransaction() != null) {
             return autonomousTransaction(ctx.autonomousTransaction());
@@ -116,9 +234,118 @@ final class AstBuilder {
         return new Exit(position(ctx.exitStatement()));
     }
 
-    private DmlStatement dml(PsqlParser.DmlStatementContext ctx) {
-        int first = ctx.getStart().getTokenIndex();
-        List<Integer> visible = visible(first, ctx.getStop().getTokenIndex() - 1);
+    /**
+     * {@code FOR SELECT ... [INTO ...] [AS CURSOR c] DO} ou {@code FOR EXECUTE STATEMENT ... DO}: o texto vai do
+     * token depois do {@code FOR} até antes do {@code DO}.
+     */
+    private Statement forStatement(PsqlParser.ForStatementContext ctx) {
+        Token doToken = ctx.DO().getSymbol();
+        Token start = tokens.get(visible(ctx.FOR().getSymbol().getTokenIndex() + 1, doToken.getTokenIndex()).get(0));
+        int last = doToken.getTokenIndex() - 1;
+        String label = label(ctx.label());
+        Statement body = statement(ctx.statement());
+        if (start.getType() == PsqlLexer.EXECUTE) {
+            List<Integer> visible = visible(start.getTokenIndex(), last);
+            if (visible.size() < 2 || tokens.get(visible.get(1)).getType() != PsqlLexer.STATEMENT) {
+                throw new PsqlSyntaxException("esperado FOR EXECUTE STATEMENT", position(start));
+            }
+            ExecuteStatement execute = executeStatement(start.getTokenIndex(), last, doToken, position(start));
+            if (execute.into().isEmpty()) {
+                throw new PsqlSyntaxException("FOR EXECUTE STATEMENT sem INTO", position(doToken));
+            }
+            return new ForExecuteStatement(label, execute, body, position(ctx));
+        }
+        // AS CURSOR c fica no fim, depois do INTO.
+        List<Integer> visible = visible(start.getTokenIndex(), last);
+        String cursor = null;
+        int n = visible.size();
+        if (n > 3 && tokens.get(visible.get(n - 3)).getType() == PsqlLexer.AS
+                && tokens.get(visible.get(n - 2)).getType() == PsqlLexer.CURSOR
+                && isIdentifier(tokens.get(visible.get(n - 1)).getType())) {
+            cursor = Identifiers.normalize(tokens.get(visible.get(n - 1)).getText());
+            last = visible.get(n - 3) - 1;
+        }
+        DmlStatement select = dml(start.getTokenIndex(), last, position(start));
+        if (select.into().isEmpty() && cursor == null) {
+            throw new PsqlSyntaxException("FOR SELECT sem INTO nem AS CURSOR", position(doToken));
+        }
+        return new ForSelect(label, select, cursor, body, position(ctx));
+    }
+
+    /** {@code FETCH [<orientação> FROM] cursor [INTO ...]}. */
+    private Fetch fetch(PsqlParser.FetchStatementContext ctx) {
+        Token semi = ctx.getStop();
+        List<Integer> visible = visible(ctx.getStart().getTokenIndex() + 1, semi.getTokenIndex() - 1);
+        int from = -1;
+        int depth = 0;
+        for (int k = 0; k < visible.size() && from < 0; k++) {
+            Token token = tokens.get(visible.get(k));
+            depth += depthChange(token);
+            if (depth == 0 && isWord(token, "FROM")) {
+                from = k;
+            }
+        }
+        Fetch.Orientation orientation = Fetch.Orientation.NEXT;
+        Expression offset = null;
+        int k = 0;
+        if (from >= 0) {
+            Token word = tokens.get(visible.get(0));
+            orientation = orientation(word);
+            boolean positioned =
+                    orientation == Fetch.Orientation.ABSOLUTE || orientation == Fetch.Orientation.RELATIVE;
+            if (positioned) {
+                offset = expression(visible.subList(1, from), word);
+            } else if (from != 1) {
+                throw new PsqlSyntaxException("trecho não reconhecido no FETCH: '"
+                        + tokens.get(visible.get(1)).getText() + "'", position(tokens.get(visible.get(1))));
+            }
+            k = from + 1;
+        }
+        if (k >= visible.size() || !isIdentifier(tokens.get(visible.get(k)).getType())) {
+            Token wrong = k < visible.size() ? tokens.get(visible.get(k)) : semi;
+            throw new PsqlSyntaxException("esperado o nome do cursor no FETCH", position(wrong));
+        }
+        String cursor = Identifiers.normalize(tokens.get(visible.get(k)).getText());
+        k++;
+        List<String> targets = List.of();
+        if (k < visible.size()) {
+            Token into = tokens.get(visible.get(k));
+            if (into.getType() != PsqlLexer.INTO) {
+                throw new PsqlSyntaxException("trecho não reconhecido no FETCH: '" + into.getText() + "'",
+                        position(into));
+            }
+            targets = targets(visible.subList(k, visible.size()));
+        }
+        return new Fetch(cursor, orientation, offset, targets, position(ctx));
+    }
+
+    private static Fetch.Orientation orientation(Token word) {
+        if (word.getType() == PsqlLexer.IDENTIFIER) {
+            try {
+                return Fetch.Orientation.valueOf(word.getText().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                // cai no erro abaixo
+            }
+        }
+        throw new PsqlSyntaxException("orientação de FETCH não reconhecida: '" + word.getText() + "'",
+                position(word));
+    }
+
+    private Raise raise(PsqlParser.RaiseStatementContext ctx) {
+        if (ctx.identifier() == null) {
+            return new Raise(null, null, List.of(), position(ctx));
+        }
+        String exception = name(ctx.identifier());
+        List<Expression> expressions = ctx.expression().stream().map(this::expression).toList();
+        if (ctx.USING() != null) {
+            return new Raise(exception, null, expressions, position(ctx));
+        }
+        return new Raise(exception, expressions.isEmpty() ? null : expressions.get(0), List.of(), position(ctx));
+    }
+
+    /** Fatia DML dos tokens {@code [first, last]}, sem o {@code ;}. */
+    private DmlStatement dml(int first, int last, SourcePosition position) {
+        List<Integer> visible = visible(first, last);
         DmlStatement.Kind kind = dmlKind(visible);
         // INSERT INTO, MERGE INTO e UPDATE OR INSERT INTO nomeiam a tabela; qualquer outro INTO é o das variáveis.
         int tableInto = switch (kind) {
@@ -146,7 +373,7 @@ final class AstBuilder {
         List<String> targets = into < 0 ? List.of() : targets(visible.subList(into, visible.size()));
         int lastSent = into < 0 ? visible.get(visible.size() - 1) : visible.get(into) - 1;
         return new DmlStatement(kind, expression(first, lastSent, Candidates.DML), targets, unsupported,
-                position(ctx));
+                position);
     }
 
     private DmlStatement.Kind dmlKind(List<Integer> visible) {
@@ -163,15 +390,16 @@ final class AstBuilder {
     }
 
     /**
-     * {@code EXECUTE STATEMENT <sql> [(<parâmetros>)] [<opções>] [INTO <alvos>]}, onde {@code <sql>} entre
-     * parênteses é o que permite passar parâmetros.
+     * {@code EXECUTE STATEMENT <sql> [(<parâmetros>)] [<opções>] [INTO <alvos>]} nos tokens {@code [first, last]},
+     * onde {@code <sql>} entre parênteses é o que permite passar parâmetros.
+     *
+     * @param end token logo depois do trecho ({@code ;} ou {@code DO}), para a posição de erro
      */
-    private ExecuteStatement executeStatement(PsqlParser.ExecuteStatementContext ctx) {
-        Token semi = ctx.getStop();
-        List<Integer> visible = visible(ctx.getStart().getTokenIndex(), semi.getTokenIndex() - 1);
+    private ExecuteStatement executeStatement(int first, int last, Token end, SourcePosition position) {
+        List<Integer> visible = visible(first, last);
         int k = 2; // depois de EXECUTE STATEMENT
         if (k >= visible.size()) {
-            throw new PsqlSyntaxException("falta o texto do EXECUTE STATEMENT", position(semi));
+            throw new PsqlSyntaxException("falta o texto do EXECUTE STATEMENT", position(end));
         }
         Expression sql;
         List<ExecuteStatement.Parameter> parameters = List.of();
@@ -186,9 +414,9 @@ final class AstBuilder {
                 k = close + 1;
             }
         } else {
-            int end = nextOption(visible, k);
-            sql = expression(visible.subList(k, end), tokens.get(visible.get(k)));
-            k = end;
+            int optionStart = nextOption(visible, k);
+            sql = expression(visible.subList(k, optionStart), tokens.get(visible.get(k)));
+            k = optionStart;
         }
 
         List<UnsupportedUse> unsupported = new ArrayList<>();
@@ -226,7 +454,7 @@ final class AstBuilder {
             }
             k = nextOption(visible, k + 1); // os argumentos da opção recusada não importam
         }
-        return new ExecuteStatement(sql, parameters, targets, unsupported, position(ctx));
+        return new ExecuteStatement(sql, parameters, targets, unsupported, position);
     }
 
     /** Início da próxima opção do {@code EXECUTE STATEMENT} fora de parênteses, ou o fim do statement. */
@@ -364,6 +592,19 @@ final class AstBuilder {
         StringBuilder sql = new StringBuilder();
         for (int i = first; i <= last; i++) {
             Token token = tokens.get(i);
+            if (isWord(token, "RDB$ERROR")) {
+                unsupported.add(new UnsupportedUse(UnsupportedConstruct.RDB_ERROR, position(token)));
+            }
+            int fieldEnd = fieldEnd(i, first, last, candidates);
+            if (fieldEnd >= 0) {
+                flush(sql, parts);
+                Token qualifier = token.getType() == PsqlLexer.COLON ? tokens.get(i + 1) : token;
+                parts.add(new Expression.Field(Identifiers.normalize(qualifier.getText()),
+                        Identifiers.normalize(tokens.get(fieldEnd).getText()),
+                        tokens.getText(Interval.of(i, fieldEnd))));
+                i = fieldEnd;
+                continue;
+            }
             if (token.getType() == PsqlLexer.COLON && isVariableCandidate(i + 1, first, last, candidates)) {
                 continue; // o ':' vai junto do nome, logo abaixo
             }
@@ -371,23 +612,62 @@ final class AstBuilder {
                 sql.append(token.getText());
                 continue;
             }
-            if (!sql.isEmpty()) {
-                parts.add(new Expression.Sql(sql.toString()));
-                sql.setLength(0);
-            }
+            flush(sql, parts);
             boolean prefixed = i > first && tokens.get(i - 1).getType() == PsqlLexer.COLON;
             parts.add(new Expression.Name(Identifiers.normalize(token.getText()),
                     (prefixed ? ":" : "") + token.getText()));
         }
+        flush(sql, parts);
+        return new Expression(tokens.getText(Interval.of(first, last)), parts, position(tokens.get(first)));
+    }
+
+    private static void flush(StringBuilder sql, List<Expression.Part> parts) {
         if (!sql.isEmpty()) {
             parts.add(new Expression.Sql(sql.toString()));
+            sql.setLength(0);
         }
-        return new Expression(tokens.getText(Interval.of(first, last)), parts, position(tokens.get(first)));
+    }
+
+    /**
+     * Fim de um nome qualificado solto {@code [:]a.b} que começa em {@code index} (no {@code :} ou no {@code a}):
+     * {@code a} não vem depois de ponto e {@code b} não é seguido de ponto nem de {@code (}. Numa Fatia DML, o
+     * {@code :} é obrigatório.
+     *
+     * @return índice do token {@code b}, ou -1 se não houver nome qualificado ali
+     */
+    private int fieldEnd(int index, int first, int last, Candidates candidates) {
+        int qualifier = index;
+        if (tokens.get(index).getType() == PsqlLexer.COLON) {
+            qualifier = index + 1;
+        } else if (candidates == Candidates.DML) {
+            return -1;
+        } else {
+            Token previous = visible(index, -1, first, last);
+            if (previous != null && (previous.getType() == PsqlLexer.DOT || previous.getType() == PsqlLexer.COLON)) {
+                return -1;
+            }
+        }
+        if (qualifier > last || !isIdentifier(tokens.get(qualifier).getType())) {
+            return -1;
+        }
+        Token dot = visible(qualifier, +1, first, last);
+        if (dot == null || dot.getType() != PsqlLexer.DOT) {
+            return -1;
+        }
+        Token name = visible(dot.getTokenIndex(), +1, first, last);
+        if (name == null || !isIdentifier(name.getType())) {
+            return -1;
+        }
+        Token next = visible(name.getTokenIndex(), +1, first, last);
+        if (next != null && (next.getType() == PsqlLexer.DOT || next.getType() == PsqlLexer.LPAREN)) {
+            return -1;
+        }
+        return name.getTokenIndex();
     }
 
     /**
      * Identificador solto: não é chamada de função ({@code F(}) nem parte de nome qualificado ({@code A.B}). Numa
-     * Fatia DML, precisa ainda vir logo depois de {@code :}.
+     * Fatia DML, precisa ainda vir logo depois de {@code :}, a menos que seja variável de contexto de erro.
      */
     private boolean isVariableCandidate(int index, int first, int last, Candidates candidates) {
         if (index > last) {
@@ -404,7 +684,9 @@ final class AstBuilder {
         if (candidates == Candidates.PSQL || !loose) {
             return loose;
         }
-        return index > first && tokens.get(index - 1).getType() == PsqlLexer.COLON;
+        return (index > first && tokens.get(index - 1).getType() == PsqlLexer.COLON)
+                || (token.getType() == PsqlLexer.IDENTIFIER
+                        && ERROR_CONTEXT.contains(token.getText().toUpperCase(Locale.ROOT)));
     }
 
     /** Vizinho mais próximo fora do canal oculto (espaços e comentários), dentro de {@code [first, last]}. */
@@ -422,8 +704,8 @@ final class AstBuilder {
     private static boolean isIdentifier(int type) {
         return switch (type) {
             case PsqlLexer.IDENTIFIER, PsqlLexer.QUOTED_IDENTIFIER, PsqlLexer.RECREATE, PsqlLexer.BREAK,
-                    PsqlLexer.CONTINUE, PsqlLexer.DO, PsqlLexer.EXIT, PsqlLexer.IF, PsqlLexer.LEAVE,
-                    PsqlLexer.STATEMENT -> true;
+                    PsqlLexer.CONTINUE, PsqlLexer.DO, PsqlLexer.EXCEPTION, PsqlLexer.EXIT, PsqlLexer.IF,
+                    PsqlLexer.LEAVE, PsqlLexer.STATEMENT -> true;
             default -> false;
         };
     }
@@ -434,6 +716,10 @@ final class AstBuilder {
 
     private static String optionalName(PsqlParser.IdentifierContext ctx) {
         return ctx == null ? null : name(ctx);
+    }
+
+    private static String label(PsqlParser.LabelContext ctx) {
+        return ctx == null ? null : name(ctx.identifier());
     }
 
     private String text(ParserRuleContext ctx) {

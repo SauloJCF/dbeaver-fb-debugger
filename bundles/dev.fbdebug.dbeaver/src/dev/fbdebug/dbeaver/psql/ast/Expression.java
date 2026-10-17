@@ -16,7 +16,7 @@ public record Expression(String text, List<Part> parts, SourcePosition position)
     }
 
     /** Trecho de uma {@link Expression}. */
-    public sealed interface Part permits Sql, Name {
+    public sealed interface Part permits Sql, Name, Field {
 
         /** Texto original do trecho. */
         String sql();
@@ -32,5 +32,15 @@ public record Expression(String text, List<Part> parts, SourcePosition position)
      * @param name nome normalizado: maiúsculo se regular, literal se entre aspas
      */
     public record Name(String name, String sql) implements Part {
+    }
+
+    /**
+     * Nome qualificado solto ({@code [:]a.b}), que pode ser campo de cursor ({@code cursor.campo}). Numa Fatia DML,
+     * só com o {@code :}, porque sem ele {@code a.b} é coluna de tabela.
+     *
+     * @param qualifier nome normalizado antes do ponto
+     * @param name nome normalizado depois do ponto
+     */
+    public record Field(String qualifier, String name, String sql) implements Part {
     }
 }

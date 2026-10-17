@@ -4,7 +4,10 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 
-/** Savepoint para desfazer uma unidade inteira (statement ou chamada de Rotina) quando ela falha. */
+/**
+ * Savepoint para desfazer uma unidade inteira (statement, bloco com {@code WHEN} ou chamada de Rotina) quando ela
+ * falha.
+ */
 final class Savepoints {
 
     private Savepoints() {
@@ -23,15 +26,23 @@ final class Savepoints {
         try {
             result = call.run();
         } catch (SQLException | RuntimeException e) {
-            try {
-                connection.rollback(savepoint);
-                connection.releaseSavepoint(savepoint);
-            } catch (SQLException suppressed) {
-                e.addSuppressed(suppressed);
-            }
+            undo(connection, savepoint, e);
             throw e;
         }
         connection.releaseSavepoint(savepoint);
         return result;
+    }
+
+    /**
+     * {@code ROLLBACK TO SAVEPOINT} e {@code RELEASE SAVEPOINT} depois de uma falha. Se o próprio rollback falhar,
+     * o erro dele fica suprimido em {@code cause}, que é o que importa.
+     */
+    static void undo(Connection connection, Savepoint savepoint, Exception cause) {
+        try {
+            connection.rollback(savepoint);
+            connection.releaseSavepoint(savepoint);
+        } catch (SQLException suppressed) {
+            cause.addSuppressed(suppressed);
+        }
     }
 }

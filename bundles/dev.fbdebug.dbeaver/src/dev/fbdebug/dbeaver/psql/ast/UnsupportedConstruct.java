@@ -7,8 +7,8 @@ package dev.fbdebug.dbeaver.psql.ast;
  *
  * <p>
  * O que a gramática nem reconhece também é recusado pelo Pré-check, como trecho não reconhecido, com a posição
- * do erro de sintaxe. É o caso, por enquanto, de {@code FOR SELECT}, cursores, {@code EXCEPTION}/{@code WHEN},
- * {@code SUSPEND}, {@code EXECUTE PROCEDURE} e sub-rotinas, que entram nas próximas issues.
+ * do erro de sintaxe. É o caso, por enquanto, de {@code SUSPEND}, {@code EXECUTE PROCEDURE} e sub-rotinas, que
+ * entram nas próximas issues.
  */
 public enum UnsupportedConstruct {
 
@@ -31,7 +31,23 @@ public enum UnsupportedConstruct {
     ROW_COUNT_IN_DML("ROW_COUNT dentro de SELECT/INSERT/UPDATE/DELETE/MERGE"),
 
     /** Transação própria, fora da transação única da Sessão de debug. */
-    IN_AUTONOMOUS_TRANSACTION("IN AUTONOMOUS TRANSACTION");
+    IN_AUTONOMOUS_TRANSACTION("IN AUTONOMOUS TRANSACTION"),
+
+    /**
+     * Variável usada no {@code SELECT} de um cursor alterada com ele aberto (no corpo do {@code FOR SELECT}, no
+     * próprio {@code INTO} dele, ou entre o {@code OPEN} e o {@code CLOSE}). O motor relê a variável quando busca
+     * cada linha, então a mudança altera as linhas seguintes; o cursor do Interpretador recebe os valores uma vez,
+     * na abertura. O Pré-check acha os casos do {@code FOR SELECT}; os de cursor declarado são recusados durante a
+     * execução, quando acontecem.
+     */
+    CURSOR_VARIABLE_CHANGED("alteração de variável usada pelo SELECT de um cursor aberto"),
+
+    /**
+     * {@code RDB$ERROR(...)}: o servidor só conhece o erro de um handler que ele mesmo executa. Os handlers são do
+     * Interpretador, então no servidor a função daria sempre {@code NULL}. {@code GDSCODE}, {@code SQLCODE} e
+     * {@code SQLSTATE} são suportados.
+     */
+    RDB_ERROR("RDB$ERROR");
 
     private final String syntax;
 

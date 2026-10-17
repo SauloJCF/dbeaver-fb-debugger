@@ -21,5 +21,5 @@ O plugin interpreta a Rotina no cliente. A lógica procedural é executada pelo 
 - A semântica é aproximada; o risco de divergência é tratado por Testes diferenciais (ADR 0005).
 - Triggers não são alcançáveis por step into a partir de DML; só como Trigger isolada.
 - Chamadas dentro de Fatias DML são Executadas no servidor, sem step into.
-- Savepoints implícitos de blocos com `WHEN` precisam ser emulados com `SAVEPOINT`/`ROLLBACK TO SAVEPOINT`, e erros do servidor mapeados para `GDSCODE`/`SQLCODE`/`SQLSTATE`.
+- Savepoints implícitos de blocos com `WHEN` precisam ser emulados com `SAVEPOINT`/`ROLLBACK TO SAVEPOINT`, e erros do servidor mapeados para `GDSCODE`/`SQLCODE`/`SQLSTATE`. *(Detalhado em 2026-10-16, issue 07: o motor não desfaz o bloco desde a entrada, só o statement em andamento dele. O Interpretador reproduz a pilha de savepoints do motor; ver `SavepointStack`.)*
 - Construções não suportadas são recusadas pelo Pré-check, nunca executadas "mais ou menos".
