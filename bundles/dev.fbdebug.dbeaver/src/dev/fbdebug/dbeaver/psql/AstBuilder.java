@@ -19,18 +19,21 @@ import dev.fbdebug.dbeaver.psql.ast.Continue;
 import dev.fbdebug.dbeaver.psql.ast.CursorDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.DmlStatement;
 import dev.fbdebug.dbeaver.psql.ast.ErrorCondition;
+import dev.fbdebug.dbeaver.psql.ast.ExecuteProcedure;
 import dev.fbdebug.dbeaver.psql.ast.ExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.Exit;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.Fetch;
 import dev.fbdebug.dbeaver.psql.ast.ForExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.ForSelect;
+import dev.fbdebug.dbeaver.psql.ast.FunctionCall;
 import dev.fbdebug.dbeaver.psql.ast.Handler;
 import dev.fbdebug.dbeaver.psql.ast.If;
 import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
+import dev.fbdebug.dbeaver.psql.ast.ProcedureSource;
 import dev.fbdebug.dbeaver.psql.ast.Raise;
 import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
@@ -61,18 +64,55 @@ final class AstBuilder {
     /** Variáveis de contexto do handler, que valem também dentro de uma Fatia DML. */
     private static final Set<String> ERROR_CONTEXT = Set.of("GDSCODE", "SQLCODE", "SQLSTATE");
 
+    /** Variáveis de contexto de evento de uma trigger, que valem também dentro de uma Fatia DML. */
+    private static final Set<String> EVENT_CONTEXT = Set.of("INSERTING", "UPDATING", "DELETING");
+
+    /**
+     * Palavras reservadas do Firebird 5 que o léxico não separa. Sem aspas, nenhuma é nome de Rotina: {@code AND (},
+     * {@code FROM (} e {@code CAST(} não são chamadas.
+     */
+    private static final Set<String> RESERVED = Set.of("ADD", "ADMIN", "ALL", "AND", "ANY", "AT", "AVG", "BETWEEN",
+            "BIGINT", "BINARY", "BIT_LENGTH", "BLOB", "BOOLEAN", "BOTH", "BY", "CASE", "CAST", "CHAR", "CHAR_LENGTH",
+            "CHARACTER", "CHARACTER_LENGTH", "CHECK", "COLUMN", "COMMENT", "COMMIT", "CONNECT", "CONSTRAINT", "CORR",
+            "COUNT", "COVAR_POP", "COVAR_SAMP", "CROSS", "CURRENT", "CURRENT_CONNECTION", "CURRENT_DATE",
+            "CURRENT_ROLE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "CURRENT_TRANSACTION", "CURRENT_USER", "DATE", "DAY",
+            "DEC", "DECFLOAT", "DECIMAL", "DELETING", "DISCONNECT", "DISTINCT", "DOUBLE", "DROP", "ESCAPE", "EXISTS",
+            "EXTERNAL", "EXTRACT", "FALSE", "FILTER", "FLOAT", "FOREIGN", "FROM", "FULL", "GDSCODE", "GLOBAL",
+            "GRANT", "GROUP", "HAVING", "HOUR", "INDEX", "INNER", "INSENSITIVE", "INSERTING", "INT", "INT128",
+            "INTEGER", "IS", "JOIN", "LATERAL", "LEADING", "LEFT", "LIKE", "LOCAL", "LOCALTIME", "LOCALTIMESTAMP",
+            "LONG", "LOWER", "MAX", "MIN", "MINUTE", "MONTH", "NATIONAL", "NATURAL", "NCHAR", "NO", "NUMERIC",
+            "OCTET_LENGTH", "OF", "OFFSET", "ON", "ONLY", "ORDER", "OUTER", "OVER", "PARAMETER", "PLAN", "POSITION",
+            "POST_EVENT", "PRECISION", "PRIMARY", "PUBLICATION", "RDB$DB_KEY", "RDB$ERROR", "RDB$GET_CONTEXT",
+            "RDB$GET_TRANSACTION_CN", "RDB$RECORD_VERSION", "RDB$ROLE_IN_USE", "RDB$SET_CONTEXT",
+            "RDB$SYSTEM_PRIVILEGE", "REAL", "RECORD_VERSION", "RECURSIVE", "REFERENCES", "REGR_AVGX", "REGR_AVGY",
+            "REGR_COUNT", "REGR_INTERCEPT", "REGR_R2", "REGR_SLOPE", "REGR_SXX", "REGR_SXY", "REGR_SYY", "RELEASE",
+            "RESETTING", "RETURNING_VALUES", "REVOKE", "RIGHT", "ROLLBACK", "ROW", "ROW_COUNT", "ROWS", "SAVEPOINT",
+            "SCROLL", "SECOND", "SENSITIVE", "SET", "SIMILAR", "SMALLINT", "SOME", "SQLCODE", "SQLSTATE", "START",
+            "STDDEV_POP", "STDDEV_SAMP", "SUM", "TABLE", "TIME", "TIMESTAMP", "TIMEZONE_HOUR", "TIMEZONE_MINUTE",
+            "TO", "TRAILING", "TRIGGER", "TRIM", "TRUE", "UNBOUNDED", "UNION", "UNIQUE", "UNKNOWN", "UPDATING",
+            "UPPER", "USER", "VALUE", "VALUES", "VAR_POP", "VAR_SAMP", "VARBINARY", "VARCHAR", "VARYING", "VIEW",
+            "WHERE", "WINDOW", "WITHOUT", "YEAR");
+
     private final TokenStream tokens;
     /** Construções recusadas achadas dentro de expressões, em qualquer ponto da Rotina. */
     private final List<UnsupportedUse> unsupported = new ArrayList<>();
     /** A Rotina tem {@code SUSPEND}. Um builder monta uma Rotina só. */
     private boolean suspends;
+    /**
+     * A Rotina é uma trigger: numa Fatia DML, {@code NEW.campo}, {@code OLD.campo} e {@code INSERTING}/
+     * {@code UPDATING}/{@code DELETING} são referências mesmo sem {@code :}.
+     */
+    private boolean trigger;
 
     AstBuilder(TokenStream tokens) {
         this.tokens = tokens;
     }
 
-    /** Procedure, function ou {@code EXECUTE BLOCK} avulsos. */
+    /** Procedure, function, {@code EXECUTE BLOCK} ou trigger avulsos. */
     RoutineDefinition routine(PsqlParser.RoutineDefinitionContext ctx) {
+        if (ctx.triggerDefinition() != null) {
+            return trigger(ctx.triggerDefinition());
+        }
         if (ctx.procedureDefinition() != null) {
             PsqlParser.ProcedureDefinitionContext procedure = ctx.procedureDefinition();
             return procedure(null, name(procedure.identifier()), procedure.procedureSignature(),
@@ -87,7 +127,109 @@ final class AstBuilder {
         List<ParameterDeclaration> inputs = block.inputParameters() == null ? List.of()
                 : block.inputParameters().parameterDeclaration().stream().map(this::blockInput).toList();
         return routine(RoutineDefinition.Kind.EXECUTE_BLOCK, null, null, inputs, outputs(block.outputParameters()),
-                null, block.routineBody());
+                null, block.routineBody(), null);
+    }
+
+    /** Trigger, sem entradas (ver {@link RoutineParser#parseTrigger}). */
+    private RoutineDefinition trigger(PsqlParser.TriggerDefinitionContext ctx) {
+        trigger = true;
+        Token as = ctx.AS().getSymbol();
+        List<Integer> header = visible(ctx.identifier().getStop().getTokenIndex() + 1, as.getTokenIndex() - 1);
+        RoutineDefinition.Trigger definition = triggerHeader(header, as);
+        return routine(RoutineDefinition.Kind.TRIGGER, null, name(ctx.identifier()), List.of(), List.of(), null,
+                ctx.routineBody(), definition);
+    }
+
+    /**
+     * Cabeçalho de trigger entre o nome e o {@code AS}: {@code FOR tabela [ACTIVE | INACTIVE] {BEFORE | AFTER}
+     * eventos [POSITION n]}, ou a forma do SQL padrão, com {@code ON tabela} depois dos eventos; e
+     * {@code SQL SECURITY} no fim. Trigger de banco ({@code ON CONNECT}...) ou de DDL fica anotada como recusada.
+     *
+     * @param as o {@code AS} que termina o cabeçalho, para a posição de erro
+     */
+    private RoutineDefinition.Trigger triggerHeader(List<Integer> visible, Token as) {
+        int n = visible.size();
+        int k = 0;
+        String table = null;
+        if (k < n && tokens.get(visible.get(k)).getType() == PsqlLexer.FOR) {
+            table = triggerTable(visible, k + 1, as);
+            k += 2;
+        }
+        if (k < n && (isWord(tokens.get(visible.get(k)), "ACTIVE")
+                || isWord(tokens.get(visible.get(k)), "INACTIVE"))) {
+            k++;
+        }
+        if (k < n && isWord(tokens.get(visible.get(k)), "ON") && table == null) {
+            Token on = tokens.get(visible.get(k));
+            unsupported.add(new UnsupportedUse(UnsupportedConstruct.DATABASE_TRIGGER, position(on)));
+            return new RoutineDefinition.Trigger(null, false, List.of());
+        }
+        Token phase = k < n ? tokens.get(visible.get(k)) : as;
+        if (!isWord(phase, "BEFORE") && !isWord(phase, "AFTER")) {
+            throw new PsqlSyntaxException("esperado BEFORE ou AFTER no cabeçalho da trigger", position(phase));
+        }
+        boolean before = isWord(phase, "BEFORE");
+        k++;
+        List<RoutineDefinition.Trigger.Event> events = new ArrayList<>();
+        while (k < n) {
+            RoutineDefinition.Trigger.Event event = switch (tokens.get(visible.get(k)).getType()) {
+                case PsqlLexer.INSERT -> RoutineDefinition.Trigger.Event.INSERT;
+                case PsqlLexer.UPDATE -> RoutineDefinition.Trigger.Event.UPDATE;
+                case PsqlLexer.DELETE -> RoutineDefinition.Trigger.Event.DELETE;
+                default -> null;
+            };
+            if (event == null) {
+                if (events.isEmpty()) {
+                    unsupported.add(new UnsupportedUse(UnsupportedConstruct.DDL_TRIGGER, position(phase)));
+                    return new RoutineDefinition.Trigger(null, before, List.of());
+                }
+                throw new PsqlSyntaxException("esperado INSERT, UPDATE ou DELETE depois de OR",
+                        position(tokens.get(visible.get(k))));
+            }
+            events.add(event);
+            k++;
+            if (k < n && tokens.get(visible.get(k)).getType() == PsqlLexer.OR) {
+                k++;
+            } else {
+                break;
+            }
+        }
+        if (events.isEmpty()) {
+            unsupported.add(new UnsupportedUse(UnsupportedConstruct.DDL_TRIGGER, position(phase)));
+            return new RoutineDefinition.Trigger(null, before, List.of());
+        }
+        if (k < n && isWord(tokens.get(visible.get(k)), "ON") && table == null) {
+            table = triggerTable(visible, k + 1, as);
+            k += 2;
+        }
+        if (k < n && isWord(tokens.get(visible.get(k)), "POSITION")) {
+            if (k + 1 >= n || tokens.get(visible.get(k + 1)).getType() != PsqlLexer.NUMBER) {
+                throw new PsqlSyntaxException("esperado o número do POSITION",
+                        position(k + 1 < n ? tokens.get(visible.get(k + 1)) : as));
+            }
+            k += 2;
+        }
+        if (k < n && isWord(tokens.get(visible.get(k)), "SQL")) {
+            sqlSecurity(visible.get(k), visible.get(Math.min(k + 2, n - 1)));
+            k += 3;
+        }
+        if (k < n) {
+            Token wrong = tokens.get(visible.get(k));
+            throw new PsqlSyntaxException("trecho não reconhecido no cabeçalho da trigger: '" + wrong.getText() + "'",
+                    position(wrong));
+        }
+        if (table == null) {
+            throw new PsqlSyntaxException("trigger sem tabela (FOR tabela ou ON tabela)", position(phase));
+        }
+        return new RoutineDefinition.Trigger(table, before, events);
+    }
+
+    private String triggerTable(List<Integer> visible, int k, Token as) {
+        if (k >= visible.size() || !isIdentifier(tokens.get(visible.get(k)).getType())) {
+            throw new PsqlSyntaxException("esperado o nome da tabela da trigger",
+                    position(k < visible.size() ? tokens.get(visible.get(k)) : as));
+        }
+        return Identifiers.normalize(tokens.get(visible.get(k)).getText());
     }
 
     /**
@@ -145,7 +287,7 @@ final class AstBuilder {
     private RoutineDefinition procedure(String packageName, String name, PsqlParser.ProcedureSignatureContext sig,
             PsqlParser.RoutineBodyContext body) {
         return routine(RoutineDefinition.Kind.PROCEDURE, packageName, name, inputs(sig.inputParameters()),
-                outputs(sig.outputParameters()), null, body);
+                outputs(sig.outputParameters()), null, body, null);
     }
 
     private RoutineDefinition function(String packageName, String name, PsqlParser.FunctionSignatureContext sig,
@@ -167,7 +309,7 @@ final class AstBuilder {
                 tokens.getText(Interval.of(typeStart, typeEnd)), sig.notNull() != null, null,
                 position(sig.returnType()));
         return routine(RoutineDefinition.Kind.FUNCTION, packageName, name, inputs(sig.inputParameters()), List.of(),
-                returnValue, body);
+                returnValue, body, null);
     }
 
     /**
@@ -185,7 +327,7 @@ final class AstBuilder {
 
     private RoutineDefinition routine(RoutineDefinition.Kind kind, String packageName, String name,
             List<ParameterDeclaration> inputs, List<ParameterDeclaration> outputs, ParameterDeclaration returnValue,
-            PsqlParser.RoutineBodyContext body) {
+            PsqlParser.RoutineBodyContext body, RoutineDefinition.Trigger triggerHeader) {
         List<VariableDeclaration> variables = new ArrayList<>();
         List<CursorDeclaration> cursors = new ArrayList<>();
         for (PsqlParser.DeclarationContext declaration : body.declaration()) {
@@ -197,7 +339,7 @@ final class AstBuilder {
         }
         Block block = block(body.block());
         return new RoutineDefinition(kind, packageName, name, inputs, outputs, returnValue, variables, cursors,
-                block, suspends, unsupported);
+                block, suspends, unsupported, triggerHeader);
     }
 
     private List<ParameterDeclaration> inputs(PsqlParser.InputParametersContext ctx) {
@@ -312,7 +454,9 @@ final class AstBuilder {
         }
         if (ctx.assignment() != null) {
             PsqlParser.AssignmentContext assignment = ctx.assignment();
-            return new Assignment(name(assignment.identifier()), expression(assignment.expression()),
+            List<PsqlParser.IdentifierContext> target = assignment.identifier();
+            String name = name(target.get(0)) + (target.size() > 1 ? "." + name(target.get(1)) : "");
+            return new Assignment(name, expression(assignment.expression()), functionCall(assignment.expression()),
                     position(assignment));
         }
         if (ctx.ifStatement() != null) {
@@ -346,6 +490,9 @@ final class AstBuilder {
             Token semi = execute.getStop();
             return executeStatement(execute.getStart().getTokenIndex(), semi.getTokenIndex() - 1, semi,
                     position(execute));
+        }
+        if (ctx.executeProcedure() != null) {
+            return executeProcedure(ctx.executeProcedure());
         }
         if (ctx.openStatement() != null) {
             return new OpenCursor(name(ctx.openStatement().identifier()), position(ctx.openStatement()));
@@ -407,7 +554,233 @@ final class AstBuilder {
         if (select.into().isEmpty() && cursor == null) {
             throw new PsqlSyntaxException("FOR SELECT sem INTO nem AS CURSOR", position(doToken));
         }
-        return new ForSelect(label, select, cursor, body, position(ctx));
+        return new ForSelect(label, select, cursor, procedureSource(start.getTokenIndex(), last), body,
+                position(ctx));
+    }
+
+    /**
+     * Procedure como única fonte do {@code SELECT} dos tokens {@code [first, last]} (com o {@code INTO}):
+     * {@code SELECT colunas FROM [pkg.]nome[(argumentos)] [[AS] alias]}, nada mais.
+     *
+     * @return {@code null} se o {@code SELECT} não tem essa forma
+     */
+    private ProcedureSource procedureSource(int first, int last) {
+        List<Integer> visible = visible(first, last);
+        if (tokens.get(visible.get(0)).getType() != PsqlLexer.SELECT) {
+            return null;
+        }
+        int from = -1;
+        int end = visible.size();
+        int depth = 0;
+        for (int k = 1; k < visible.size(); k++) {
+            Token token = tokens.get(visible.get(k));
+            depth += depthChange(token);
+            if (depth == 0 && token.getType() == PsqlLexer.INTO) {
+                end = k;
+                break;
+            }
+            if (depth == 0 && from < 0 && isWord(token, "FROM")) {
+                from = k;
+            }
+        }
+        if (from < 0) {
+            return null;
+        }
+        List<ProcedureSource.Column> columns = columns(visible.subList(1, from));
+        QualifiedName source = from + 1 < end && isRoutineName(tokens.get(visible.get(from + 1)))
+                ? qualifiedName(visible.subList(0, end), from + 1) : null;
+        if (columns == null || source == null) {
+            return null;
+        }
+        int k = source.next();
+        List<Expression> arguments = List.of();
+        if (k < end && tokens.get(visible.get(k)).getType() == PsqlLexer.LPAREN) {
+            int close = matchingParenthesis(visible, k);
+            if (close >= end) {
+                return null;
+            }
+            arguments = arguments(visible.subList(k + 1, close), tokens.get(visible.get(k)), false);
+            k = close + 1;
+        }
+        if (k < end && tokens.get(visible.get(k)).getType() == PsqlLexer.AS) {
+            k++;
+        }
+        if (k < end && isIdentifier(tokens.get(visible.get(k)).getType())) {
+            k++; // alias
+        }
+        return k == end ? new ProcedureSource(source.packageName(), source.name(), arguments, columns,
+                source.position()) : null;
+    }
+
+    /**
+     * Colunas de um {@code SELECT} sobre procedure: {@code *}, {@code alias.*} ou {@code [alias.]saída [[AS] nome]},
+     * separadas por vírgula.
+     *
+     * @return vazio para {@code *}; {@code null} se alguma coluna não é só uma saída (expressão, {@code DISTINCT}...)
+     */
+    private List<ProcedureSource.Column> columns(List<Integer> visible) {
+        List<ProcedureSource.Column> columns = new ArrayList<>();
+        for (List<Integer> item : splitOnCommas(visible)) {
+            int n = item.size();
+            Token first = n == 0 ? null : tokens.get(item.get(0));
+            boolean star = n > 0 && isStar(tokens.get(item.get(n - 1)))
+                    && (n == 1 || (n == 3 && isIdentifier(first.getType())
+                            && tokens.get(item.get(1)).getType() == PsqlLexer.DOT));
+            if (star) {
+                if (visible.size() != n) {
+                    return null; // * junto de outras colunas
+                }
+                return List.of();
+            }
+            if (n == 0 || isWord(first, "DISTINCT") || isWord(first, "ALL")) {
+                return null;
+            }
+            QualifiedName column = qualifiedName(item, 0);
+            if (column == null) {
+                return null;
+            }
+            int k = column.next();
+            String label = column.name();
+            if (k < n && tokens.get(item.get(k)).getType() == PsqlLexer.AS) {
+                k++;
+            }
+            if (k < n && isIdentifier(tokens.get(item.get(k)).getType())) {
+                label = Identifiers.normalize(tokens.get(item.get(k)).getText());
+                k++;
+            }
+            if (k != n) {
+                return null;
+            }
+            columns.add(new ProcedureSource.Column(column.name(), label));
+        }
+        return columns;
+    }
+
+    private static boolean isStar(Token token) {
+        return token.getType() == PsqlLexer.OPERATOR && token.getText().equals("*");
+    }
+
+    /**
+     * {@code EXECUTE PROCEDURE [pkg.]nome [(]argumentos[)] [RETURNING_VALUES [(]alvos[)]]}. Os parênteses dos
+     * argumentos são os da lista quando o {@code )} deles fecha a lista inteira.
+     */
+    private ExecuteProcedure executeProcedure(PsqlParser.ExecuteProcedureContext ctx) {
+        Token semi = ctx.getStop();
+        Token keyword = ctx.PROCEDURE().getSymbol();
+        List<Integer> visible = visible(keyword.getTokenIndex() + 1, semi.getTokenIndex() - 1);
+        QualifiedName callee = qualifiedName(visible, 0);
+        if (callee == null) {
+            throw new PsqlSyntaxException("esperado o nome da procedure", position(tokens.get(visible.get(0))));
+        }
+        int returning = visible.size();
+        int depth = 0;
+        for (int k = callee.next(); k < visible.size(); k++) {
+            Token token = tokens.get(visible.get(k));
+            depth += depthChange(token);
+            if (depth == 0 && isWord(token, "RETURNING_VALUES")) {
+                returning = k;
+                break;
+            }
+        }
+        List<Integer> inputs = visible.subList(callee.next(), returning);
+        Token before = keyword;
+        if (!inputs.isEmpty() && tokens.get(inputs.get(0)).getType() == PsqlLexer.LPAREN
+                && matchingParenthesis(visible, callee.next()) == returning - 1) {
+            before = tokens.get(inputs.get(0));
+            inputs = inputs.subList(1, inputs.size() - 1);
+        }
+        List<Expression> arguments = arguments(inputs, before, true);
+        List<String> targets = List.of();
+        if (returning < visible.size()) {
+            List<Integer> rest = new ArrayList<>(visible.subList(returning, visible.size()));
+            if (rest.size() > 2 && tokens.get(rest.get(1)).getType() == PsqlLexer.LPAREN
+                    && matchingParenthesis(rest, 1) == rest.size() - 1) {
+                rest.remove(rest.size() - 1);
+                rest.remove(1);
+            }
+            targets = targets(rest);
+        }
+        return new ExecuteProcedure(callee.packageName(), callee.name(), arguments, targets, position(ctx));
+    }
+
+    /** A expressão, se ela é inteira uma chamada {@code [pkg.]nome(...)}; senão {@code null}. */
+    private FunctionCall functionCall(PsqlParser.ExpressionContext ctx) {
+        List<Integer> visible = visible(ctx.getStart().getTokenIndex(), ctx.getStop().getTokenIndex());
+        QualifiedName callee = isRoutineName(tokens.get(visible.get(0))) ? qualifiedName(visible, 0) : null;
+        if (callee == null || callee.next() >= visible.size()
+                || tokens.get(visible.get(callee.next())).getType() != PsqlLexer.LPAREN
+                || matchingParenthesis(visible, callee.next()) != visible.size() - 1) {
+            return null;
+        }
+        List<Expression> arguments = arguments(visible.subList(callee.next() + 1, visible.size() - 1),
+                tokens.get(visible.get(callee.next())), false);
+        return new FunctionCall(callee.packageName(), callee.name(), arguments, callee.position());
+    }
+
+    /**
+     * Nome {@code [pkg.]nome} que começa na posição {@code k} de {@code visible}.
+     *
+     * @param next posição, em {@code visible}, do token depois do nome
+     */
+    private record QualifiedName(String packageName, String name, SourcePosition position, int next) {
+    }
+
+    /** @return {@code null} se não há nome em {@code k} */
+    private QualifiedName qualifiedName(List<Integer> visible, int k) {
+        if (k >= visible.size() || !isIdentifier(tokens.get(visible.get(k)).getType())) {
+            return null;
+        }
+        Token first = tokens.get(visible.get(k));
+        if (k + 2 < visible.size() && tokens.get(visible.get(k + 1)).getType() == PsqlLexer.DOT) {
+            Token second = tokens.get(visible.get(k + 2));
+            if (!isIdentifier(second.getType())) {
+                return null;
+            }
+            return new QualifiedName(Identifiers.normalize(first.getText()), Identifiers.normalize(second.getText()),
+                    position(first), k + 3);
+        }
+        return new QualifiedName(null, Identifiers.normalize(first.getText()), position(first), k + 1);
+    }
+
+    /**
+     * Argumentos de uma chamada, separados por vírgula fora de parênteses; sem tokens, nenhum.
+     *
+     * @param before token antes da lista, para a posição de um argumento vazio
+     * @param record anotar as construções recusadas achadas nos argumentos; {@code false} quando os mesmos tokens
+     *            já fazem parte de outra expressão, que as anota
+     */
+    private List<Expression> arguments(List<Integer> visible, Token before, boolean record) {
+        if (visible.isEmpty()) {
+            return List.of();
+        }
+        List<Expression> arguments = new ArrayList<>();
+        Token previous = before;
+        for (List<Integer> item : splitOnCommas(visible)) {
+            if (item.isEmpty()) {
+                throw new PsqlSyntaxException("argumento vazio depois de '" + previous.getText() + "'",
+                        position(previous));
+            }
+            arguments.add(expression(item.get(0), item.get(item.size() - 1), Candidates.PSQL, record));
+            previous = tokens.get(item.get(item.size() - 1));
+        }
+        return arguments;
+    }
+
+    /** Trechos de {@code visible} separados pelas vírgulas fora de parênteses. */
+    private List<List<Integer>> splitOnCommas(List<Integer> visible) {
+        List<List<Integer>> items = new ArrayList<>();
+        int start = 0;
+        int depth = 0;
+        for (int k = 0; k < visible.size(); k++) {
+            Token token = tokens.get(visible.get(k));
+            depth += depthChange(token);
+            if (depth == 0 && token.getType() == PsqlLexer.COMMA) {
+                items.add(visible.subList(start, k));
+                start = k + 1;
+            }
+        }
+        items.add(visible.subList(start, visible.size()));
+        return items;
     }
 
     /** {@code FETCH [<orientação> FROM] cursor [INTO ...]}. */
@@ -651,7 +1024,10 @@ final class AstBuilder {
         return new InAutonomousTransaction(statement(ctx.statement()), position(ctx));
     }
 
-    /** {@code INTO [:]alvo, ...} até o fim do statement; {@code visible} começa no {@code INTO}. */
+    /**
+     * {@code INTO [:]alvo, ...} até o fim do statement; {@code visible} começa no {@code INTO}. Numa trigger, o alvo
+     * pode ser {@code NEW.campo}.
+     */
     private List<String> targets(List<Integer> visible) {
         List<String> targets = new ArrayList<>();
         for (int k = 1;; k++) {
@@ -663,7 +1039,13 @@ final class AstBuilder {
                 throw new PsqlSyntaxException("alvo do INTO não reconhecido: '" + wrong.getText() + "'",
                         position(wrong));
             }
-            targets.add(Identifiers.normalize(tokens.get(visible.get(k)).getText()));
+            String target = Identifiers.normalize(tokens.get(visible.get(k)).getText());
+            if (k + 2 < visible.size() && tokens.get(visible.get(k + 1)).getType() == PsqlLexer.DOT
+                    && isIdentifier(tokens.get(visible.get(k + 2)).getType())) {
+                target += "." + Identifiers.normalize(tokens.get(visible.get(k + 2)).getText());
+                k += 2;
+            }
+            targets.add(target);
             k++;
             if (k == visible.size()) {
                 return targets;
@@ -726,12 +1108,28 @@ final class AstBuilder {
     }
 
     private Expression expression(int first, int last, Candidates candidates) {
+        return expression(first, last, candidates, true);
+    }
+
+    /** @param record anotar as construções recusadas achadas (ver {@link #arguments}) */
+    private Expression expression(int first, int last, Candidates candidates, boolean record) {
         List<Expression.Part> parts = new ArrayList<>();
         StringBuilder sql = new StringBuilder();
         for (int i = first; i <= last; i++) {
             Token token = tokens.get(i);
-            if (isWord(token, "RDB$ERROR")) {
+            if (record && isWord(token, "RDB$ERROR")) {
                 unsupported.add(new UnsupportedUse(UnsupportedConstruct.RDB_ERROR, position(token)));
+            }
+            int callEnd = callEnd(i, first, last, candidates);
+            if (callEnd >= 0) {
+                flush(sql, parts);
+                Token name = tokens.get(callEnd);
+                Token next = visible(callEnd, +1, first, last);
+                parts.add(new Expression.Call(callEnd == i ? null : Identifiers.normalize(token.getText()),
+                        Identifiers.normalize(name.getText()), next != null && next.getType() == PsqlLexer.LPAREN,
+                        tokens.getText(Interval.of(i, callEnd)), position(token)));
+                i = callEnd;
+                continue;
             }
             int fieldEnd = fieldEnd(i, first, last, candidates);
             if (fieldEnd >= 0) {
@@ -767,6 +1165,54 @@ final class AstBuilder {
     }
 
     /**
+     * Fim de um nome que pode ser de Rotina chamada ({@link Expression.Call}) e que começa em {@code index}:
+     * {@code [a.]b(}, que não vem depois de ponto, de {@code :} nem do {@code INTO} de um {@code INSERT}; ou, numa
+     * Fatia DML, {@code FROM|JOIN [a.]b}. Fora de DML, um nome depois de {@code FROM} pode ser variável
+     * ({@code EXTRACT(YEAR FROM d)}).
+     *
+     * @return índice do token {@code b}, ou -1 se não há nome de Rotina ali
+     */
+    private int callEnd(int index, int first, int last, Candidates candidates) {
+        if (!isRoutineName(tokens.get(index))) {
+            return -1;
+        }
+        Token previous = visible(index, -1, first, last);
+        if (previous != null && (previous.getType() == PsqlLexer.DOT || previous.getType() == PsqlLexer.COLON
+                || previous.getType() == PsqlLexer.INTO)) {
+            return -1;
+        }
+        int end = index;
+        Token next = visible(index, +1, first, last);
+        if (next != null && next.getType() == PsqlLexer.DOT) {
+            Token name = visible(next.getTokenIndex(), +1, first, last);
+            if (name == null || !isIdentifier(name.getType())) {
+                return -1;
+            }
+            end = name.getTokenIndex();
+            next = visible(end, +1, first, last);
+        }
+        if (next != null && next.getType() == PsqlLexer.LPAREN) {
+            return end;
+        }
+        boolean source = candidates == Candidates.DML && previous != null
+                && (isWord(previous, "FROM") || isWord(previous, "JOIN"));
+        return source && (next == null || next.getType() != PsqlLexer.DOT) ? end : -1;
+    }
+
+    /**
+     * Pode ser o começo do nome de uma Rotina do usuário: não é palavra reservada nem nome de sistema
+     * ({@code RDB$}, {@code MON$}, {@code SEC$}, inclusive as packages do sistema, como {@code RDB$BLOB_UTIL}).
+     */
+    private static boolean isRoutineName(Token token) {
+        if (!isIdentifier(token.getType())) {
+            return false;
+        }
+        String name = Identifiers.normalize(token.getText());
+        return !(token.getType() == PsqlLexer.IDENTIFIER && RESERVED.contains(name)) && !name.startsWith("RDB$")
+                && !name.startsWith("MON$") && !name.startsWith("SEC$");
+    }
+
+    /**
      * Fim de um nome qualificado solto {@code [:]a.b} que começa em {@code index} (no {@code :} ou no {@code a}):
      * {@code a} não vem depois de ponto e {@code b} não é seguido de ponto nem de {@code (}. Numa Fatia DML, o
      * {@code :} é obrigatório.
@@ -777,7 +1223,7 @@ final class AstBuilder {
         int qualifier = index;
         if (tokens.get(index).getType() == PsqlLexer.COLON) {
             qualifier = index + 1;
-        } else if (candidates == Candidates.DML) {
+        } else if (candidates == Candidates.DML && !(trigger && isRecord(tokens.get(index)))) {
             return -1;
         } else {
             Token previous = visible(index, -1, first, last);
@@ -822,9 +1268,15 @@ final class AstBuilder {
         if (candidates == Candidates.PSQL || !loose) {
             return loose;
         }
+        String word = token.getText().toUpperCase(Locale.ROOT);
         return (index > first && tokens.get(index - 1).getType() == PsqlLexer.COLON)
                 || (token.getType() == PsqlLexer.IDENTIFIER
-                        && ERROR_CONTEXT.contains(token.getText().toUpperCase(Locale.ROOT)));
+                        && (ERROR_CONTEXT.contains(word) || (trigger && EVENT_CONTEXT.contains(word))));
+    }
+
+    /** {@code NEW} ou {@code OLD}, os registros de contexto de uma trigger. */
+    private static boolean isRecord(Token token) {
+        return isWord(token, "NEW") || isWord(token, "OLD");
     }
 
     /** Vizinho mais próximo fora do canal oculto (espaços e comentários), dentro de {@code [first, last]}. */

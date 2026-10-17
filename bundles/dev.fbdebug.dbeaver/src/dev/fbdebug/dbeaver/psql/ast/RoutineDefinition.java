@@ -7,11 +7,14 @@ import java.util.List;
  *
  * @param packageName package da rotina, ou {@code null} fora de package
  * @param name nome da rotina; {@code null} num {@code EXECUTE BLOCK}
- * @param outputs parâmetros de saída ({@code RETURNS (...)}); vazio numa function
+ * @param inputs parâmetros de entrada; numa trigger isolada, {@code NEW.*}, {@code OLD.*}, {@code INSERTING},
+ *            {@code UPDATING} e {@code DELETING} (ver {@link Trigger})
+ * @param outputs parâmetros de saída ({@code RETURNS (...)}); vazio numa function e numa trigger
  * @param returnValue tipo de retorno de uma function, com o nome dela; {@code null} nos outros tipos
  * @param selectable tem {@code SUSPEND} (o motor a cadastra como procedure selecionável)
  * @param unsupported construções recusadas que aparecem dentro de expressões, fora de qualquer statement em
- *            particular (ver {@link UnsupportedConstruct})
+ *            particular, ou no cabeçalho (trigger de banco ou de DDL); ver {@link UnsupportedConstruct}
+ * @param trigger cabeçalho de uma trigger; {@code null} nos outros tipos
  */
 public record RoutineDefinition(
         Kind kind,
@@ -24,11 +27,12 @@ public record RoutineDefinition(
         List<CursorDeclaration> cursors,
         Block body,
         boolean selectable,
-        List<UnsupportedUse> unsupported) {
+        List<UnsupportedUse> unsupported,
+        Trigger trigger) {
 
     /** Tipo de Rotina raiz. */
     public enum Kind {
-        PROCEDURE, FUNCTION, EXECUTE_BLOCK
+        PROCEDURE, FUNCTION, EXECUTE_BLOCK, TRIGGER
     }
 
     public RoutineDefinition {
@@ -45,5 +49,30 @@ public record RoutineDefinition(
             return "EXECUTE BLOCK";
         }
         return packageName == null ? name : packageName + "." + name;
+    }
+
+    /** A mesma Rotina com outras entradas. */
+    public RoutineDefinition withInputs(List<ParameterDeclaration> newInputs) {
+        return new RoutineDefinition(kind, packageName, name, newInputs, outputs, returnValue, declarations, cursors,
+                body, selectable, unsupported, trigger);
+    }
+
+    /**
+     * Cabeçalho de uma trigger de tabela: {@code FOR tabela {BEFORE | AFTER} evento [OR evento ...]}. Numa trigger
+     * de banco ou de DDL, que o Pré-check recusa, a tabela é {@code null} e não há eventos.
+     *
+     * @param table nome normalizado da tabela (ou view)
+     * @param before {@code BEFORE}; senão {@code AFTER}
+     */
+    public record Trigger(String table, boolean before, List<Event> events) {
+
+        /** Evento de DML que dispara a trigger. */
+        public enum Event {
+            INSERT, UPDATE, DELETE
+        }
+
+        public Trigger {
+            events = List.copyOf(events);
+        }
     }
 }

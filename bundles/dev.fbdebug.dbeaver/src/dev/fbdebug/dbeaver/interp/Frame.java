@@ -11,15 +11,27 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 
+import dev.fbdebug.dbeaver.psql.Identifiers;
+import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
+import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
+import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 
 /**
- * Estado de uma Rotina em execução: variáveis visíveis (parâmetros de entrada, de saída e locais, na ordem
- * declarada), cursores, o {@code ROW_COUNT}, o erro do handler em execução e os savepoints dos blocos.
+ * Estado de uma Rotina em execução: a Rotina e o statement em execução, variáveis visíveis (parâmetros de entrada,
+ * de saída e locais, na ordem declarada), cursores, o {@code ROW_COUNT}, o erro do handler em execução e os
+ * savepoints dos blocos.
  */
 public final class Frame {
+
+    private final RoutineDefinition routine;
+    private final boolean steppedInto;
+    /** Rotinas da package da Rotina, que uma chamada sem package dentro dela alcança. */
+    private final Set<String> packageRoutines;
+    private SourcePosition position;
 
     private final Map<String, Variable> variables = new LinkedHashMap<>();
     /** Cursores declarados e os nomeados dos laços em execução. */
@@ -37,22 +49,66 @@ public final class Frame {
 
     private final SavepointStack savepoints;
     private final Consumer<List<Object>> rows;
-    private final ParameterDeclaration returnValue;
     private Object returned;
 
     /**
      * @param rows destino das linhas do {@code SUSPEND}, ou {@code null} se a Rotina roda como executável
-     * @param returnValue tipo de retorno, se a Rotina é uma function; senão {@code null}
+     * @param steppedInto ver {@link #steppedInto()}
+     * @param packageRoutines nomes das rotinas da package da Rotina; vazio fora de package
      */
-    Frame(SavepointStack savepoints, Consumer<List<Object>> rows, ParameterDeclaration returnValue) {
+    Frame(RoutineDefinition routine, boolean steppedInto, SavepointStack savepoints, Consumer<List<Object>> rows,
+            Set<String> packageRoutines) {
+        this.routine = routine;
+        this.steppedInto = steppedInto;
         this.savepoints = savepoints;
         this.rows = rows;
-        this.returnValue = returnValue;
+        this.packageRoutines = Set.copyOf(packageRoutines);
+        this.position = routine.body().position();
+    }
+
+    public RoutineDefinition routine() {
+        return routine;
+    }
+
+    /**
+     * A Rotina é a raiz ou foi interpretada por step into. Falso numa Rotina que o Interpretador interpreta por
+     * conta própria num step over, porque no servidor a chamada não seria fiel ao motor ({@code FOR SELECT} sobre
+     * procedure) ou não acharia a Rotina (privada de package); ver {@link CallPolicy}. A camada de debug não para
+     * dentro dela.
+     */
+    public boolean steppedInto() {
+        return steppedInto;
+    }
+
+    /** Statement em execução (ou, numa Rotina que chama outra, o da chamada); antes do primeiro, o bloco principal. */
+    public SourcePosition position() {
+        return position;
+    }
+
+    void position(SourcePosition statement) {
+        position = statement;
+    }
+
+    /**
+     * Nome da Rotina chamada para o servidor. Dentro do corpo de uma package, uma rotina dela chamada sem package
+     * ganha o nome da package, como o motor a resolve; fora dela, o nome sem package seria outra Rotina.
+     */
+    String serverName(String packageName, String name) {
+        String pkg = packageName != null ? packageName : packageRoutines.contains(name) ? routine.packageName() : null;
+        return (pkg == null ? "" : Identifiers.quote(pkg) + ".") + Identifiers.quote(name);
+    }
+
+    /** Texto de um candidato a chamada numa expressão enviada ao servidor (ver {@link #serverName}). */
+    String serverText(Expression.Call call) {
+        if (call.packageName() == null && call.arguments() && packageRoutines.contains(call.name())) {
+            return Identifiers.quote(routine.packageName()) + "." + call.sql();
+        }
+        return call.sql();
     }
 
     /** Tipo de retorno da function; {@code null} nos outros tipos de Rotina. */
     ParameterDeclaration returnValue() {
-        return returnValue;
+        return routine.returnValue();
     }
 
     /** Valor do {@code RETURN} executado; {@code null} antes dele. */

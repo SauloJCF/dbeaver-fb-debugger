@@ -17,13 +17,32 @@ public final class DebugSession implements AutoCloseable {
 
     private final Connection connection;
     private final boolean commitOnFinish;
+    private final Interpreter interpreter;
     private boolean finished;
 
-    /** @param connection conexão dedicada à sessão; passa a ser da sessão */
+    /**
+     * Sessão em que toda chamada de Rotina é executada no servidor.
+     *
+     * @param connection conexão dedicada à sessão; passa a ser da sessão
+     */
     public DebugSession(Connection connection, boolean commitOnFinish) throws SQLException {
+        this(connection, commitOnFinish, CallPolicy.SERVER);
+    }
+
+    /**
+     * @param connection conexão dedicada à sessão; passa a ser da sessão
+     * @param policy escolha entre step into e step over a cada chamada elegível
+     */
+    public DebugSession(Connection connection, boolean commitOnFinish, CallPolicy policy) throws SQLException {
         this.connection = connection;
         this.commitOnFinish = commitOnFinish;
         connection.setAutoCommit(false);
+        this.interpreter = new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy);
+    }
+
+    /** Pilha de frames da execução em andamento (ver {@link Interpreter#frames()}). */
+    public List<Frame> frames() {
+        return interpreter.frames();
     }
 
     /**
@@ -32,7 +51,7 @@ public final class DebugSession implements AutoCloseable {
      * @throws PsqlExecutionException se o Pré-check recusar a Rotina, antes de executar qualquer coisa
      */
     public ProcedureResult run(RoutineDefinition routine, List<?> inputs) throws SQLException {
-        return finish(routine, interpreter -> interpreter.execute(routine, inputs));
+        return finish(routine, () -> interpreter.execute(routine, inputs));
     }
 
     /**
@@ -43,7 +62,7 @@ public final class DebugSession implements AutoCloseable {
      */
     public void select(RoutineDefinition routine, List<?> inputs, Consumer<List<Object>> rows)
             throws SQLException {
-        finish(routine, interpreter -> {
+        finish(routine, () -> {
             interpreter.select(routine, inputs, rows);
             return null;
         });
@@ -62,7 +81,7 @@ public final class DebugSession implements AutoCloseable {
         finished = true;
         T result;
         try {
-            result = execution.run(new Interpreter(connection));
+            result = execution.run();
         } catch (SQLException | RuntimeException e) {
             rollbackQuietly(e);
             throw e;
@@ -88,7 +107,7 @@ public final class DebugSession implements AutoCloseable {
 
     @FunctionalInterface
     private interface Execution<T> {
-        T run(Interpreter interpreter) throws SQLException;
+        T run() throws SQLException;
     }
 
     private void rollbackQuietly(Exception cause) {

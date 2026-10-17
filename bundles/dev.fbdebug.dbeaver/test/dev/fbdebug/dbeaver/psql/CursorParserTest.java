@@ -179,7 +179,7 @@ class CursorParserTest {
     private static String withPlaceholders(Expression expression) {
         StringBuilder text = new StringBuilder();
         for (Expression.Part part : expression.parts()) {
-            text.append(part instanceof Expression.Sql ? part.sql() : "?");
+            text.append(part instanceof Expression.Sql || part instanceof Expression.Call ? part.sql() : "?");
         }
         return text.toString();
     }

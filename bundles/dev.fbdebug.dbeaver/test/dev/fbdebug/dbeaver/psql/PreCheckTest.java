@@ -181,13 +181,13 @@ class PreCheckTest {
                 DECLARE X INTEGER;
                 BEGIN
                   X = 1;
-                  EXECUTE PROCEDURE OUTRA (:X);
+                  POST_EVENT 'fim';
                 END""");
 
         assertEquals(1, findings.size());
         PreCheck.Finding finding = findings.get(0);
-        assertEquals(new SourcePosition(5, 11), finding.position());
-        assertTrue(finding.description().contains("'EXECUTE' (linha 5, coluna 3)"), finding.description());
+        assertEquals(new SourcePosition(5, 14), finding.position());
+        assertTrue(finding.description().contains("'POST_EVENT' (linha 5, coluna 3)"), finding.description());
     }
 
     private static void assertRefused(UnsupportedConstruct construct, SourcePosition position, String source) {

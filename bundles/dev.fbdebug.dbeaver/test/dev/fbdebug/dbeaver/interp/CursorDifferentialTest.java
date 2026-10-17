@@ -343,13 +343,30 @@ class CursorDifferentialTest {
             var procedure = RoutineParser.parse(RoutineSourceLoader.loadProcedure(connection, "CUR_ABERTOS"));
             Interpreter interpreter = new Interpreter(connection);
 
-            int before = openStatements(connection);
+            int before = settledOpenStatements(connection);
             interpreter.execute(procedure, List.of(false));
-            assertEquals(before, openStatements(connection), "statements abertos depois do fim normal");
+            assertEquals(before, settledOpenStatements(connection), "statements abertos depois do fim normal");
             assertThrows(SQLException.class, () -> interpreter.execute(procedure, List.of(true)));
-            assertEquals(before, openStatements(connection), "statements abertos depois de um erro");
+            assertEquals(before, settledOpenStatements(connection), "statements abertos depois de um erro");
             connection.rollback();
         }
+    }
+
+    /**
+     * {@link #openStatements} quando a contagem para de mudar. Um statement fechado às vezes ainda aparece logo
+     * depois do fechamento, e às vezes não (a liberação é assíncrona); um cursor deixado aberto não some nunca.
+     */
+    private static int settledOpenStatements(Connection connection) throws Exception {
+        int previous = openStatements(connection);
+        for (int attempt = 0; attempt < 20; attempt++) {
+            Thread.sleep(100);
+            int current = openStatements(connection);
+            if (current == previous) {
+                return current;
+            }
+            previous = current;
+        }
+        return previous;
     }
 
     /** Statements alocados na conexão; cada consulta ao MON$ usa uma transação própria, para ver o estado atual. */

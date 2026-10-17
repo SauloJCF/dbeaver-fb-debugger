@@ -9,9 +9,19 @@ parser grammar PsqlParser;
 
 options { tokenVocab = PsqlLexer; }
 
-// Rotina avulsa: procedure, function ou EXECUTE BLOCK.
+// Rotina avulsa: procedure, function, EXECUTE BLOCK ou trigger.
 routineDefinition
-    : ( procedureDefinition | functionDefinition | executeBlock ) SEMI? EOF
+    : ( procedureDefinition | functionDefinition | executeBlock | triggerDefinition ) SEMI? EOF
+    ;
+
+// CREATE TRIGGER nome <cabeçalho> AS ...: o cabeçalho (FOR tabela, fase, eventos, POSITION, ou ON CONNECT etc. numa
+// trigger de banco) é separado pelo AstBuilder.
+triggerDefinition
+    : createOrAlter TRIGGER identifier triggerHeaderPart* AS routineBody
+    ;
+
+triggerHeaderPart
+    : ~( AS | SEMI )
     ;
 
 procedureDefinition
@@ -146,6 +156,7 @@ statement
     | exitStatement
     | dmlStatement
     | executeStatement
+    | executeProcedure
     | openStatement
     | fetchStatement
     | closeStatement
@@ -204,13 +215,19 @@ executeStatement
     : EXECUTE STATEMENT ~SEMI* SEMI
     ;
 
+// EXECUTE PROCEDURE [pkg.]nome [(]argumentos[)] [RETURNING_VALUES [(]alvos[)]]; separado pelo AstBuilder.
+executeProcedure
+    : EXECUTE PROCEDURE ~SEMI+ SEMI
+    ;
+
 // IN AUTONOMOUS TRANSACTION DO (AUTONOMOUS e TRANSACTION não são reservadas). Reconhecido só para o Pré-check.
 autonomousTransaction
     : IN identifier identifier DO statement
     ;
 
+// NEW.campo = ... numa trigger.
 assignment
-    : COLON? identifier EQ expression SEMI
+    : COLON? identifier ( DOT identifier )? EQ expression SEMI
     ;
 
 // O ELSE fica com o IF mais próximo (o ANTLR escolhe a alternativa gulosa), como no Firebird.

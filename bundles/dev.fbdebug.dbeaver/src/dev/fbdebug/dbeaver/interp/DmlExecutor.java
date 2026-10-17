@@ -95,6 +95,41 @@ final class DmlExecutor {
         return row == null ? null : assignable(row, execute.into(), frame);
     }
 
+    /**
+     * {@code EXECUTE PROCEDURE} no servidor, com os argumentos avaliados lá. Não muda o {@code ROW_COUNT}.
+     *
+     * @param name nome da procedure para o servidor (ver {@link Frame#serverName})
+     * @return as saídas, na ordem do {@code RETURNS}, como o servidor as devolve; vazio se não houver
+     */
+    List<Object> executeProcedure(String name, List<Expression> arguments, Frame frame) throws SQLException {
+        StringBuilder sql = new StringBuilder("EXECUTE PROCEDURE ").append(name);
+        List<Object> parameters = new ArrayList<>();
+        for (int i = 0; i < arguments.size(); i++) {
+            BoundSql bound = BoundSql.bind(arguments.get(i), frame);
+            sql.append(i == 0 ? "(" : ", ").append(bound.sql());
+            parameters.addAll(bound.parameters());
+        }
+        if (!arguments.isEmpty()) {
+            sql.append(')');
+        }
+        try (PreparedStatement statement = Statements.prepare(connection, sql.toString(), parameters)) {
+            if (!statement.execute()) {
+                return List.of();
+            }
+            try (ResultSet resultSet = statement.getResultSet()) {
+                if (!resultSet.next()) {
+                    return List.of();
+                }
+                int columns = resultSet.getMetaData().getColumnCount();
+                List<Object> row = new ArrayList<>(columns);
+                for (int i = 1; i <= columns; i++) {
+                    row.add(resultSet.getObject(i));
+                }
+                return row;
+            }
+        }
+    }
+
     /** Abre o cursor de um {@code FOR SELECT} ou {@code OPEN}, com os {@code :var} valendo o que valem agora. */
     void open(Cursor cursor, DmlStatement select, Frame frame) throws SQLException {
         BoundSql bound = BoundSql.bind(select.sql(), frame);
@@ -102,6 +137,9 @@ final class DmlExecutor {
         for (Expression.Part part : select.sql().parts()) {
             if (part instanceof Expression.Name name && frame.find(name.name()).isPresent()) {
                 variables.add(name.name());
+            } else if (part instanceof Expression.Field field
+                    && frame.find(field.qualifier() + "." + field.name()).isPresent()) {
+                variables.add(field.qualifier() + "." + field.name()); // NEW.campo numa trigger
             }
         }
         cursor.open(connection, bound.sql(), bound.parameters(), variables);

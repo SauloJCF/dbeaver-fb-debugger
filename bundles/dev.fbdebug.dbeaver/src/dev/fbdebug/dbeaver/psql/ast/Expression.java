@@ -16,7 +16,7 @@ public record Expression(String text, List<Part> parts, SourcePosition position)
     }
 
     /** Trecho de uma {@link Expression}. */
-    public sealed interface Part permits Sql, Name, Field {
+    public sealed interface Part permits Sql, Name, Field, Call {
 
         /** Texto original do trecho. */
         String sql();
@@ -42,5 +42,19 @@ public record Expression(String text, List<Part> parts, SourcePosition position)
      * @param name nome normalizado depois do ponto
      */
     public record Field(String qualifier, String name, String sql) implements Part {
+    }
+
+    /**
+     * Nome que pode ser de uma Rotina chamada: {@code [pkg.]nome(} ou, numa Fatia DML, {@code FROM|JOIN [pkg.]nome}
+     * sem parênteses. É só um candidato: pode ser função interna ({@code UPPER(}), tabela ou, depois de
+     * {@code FROM}, coluna de {@code EXTRACT(... FROM c)}; quem distingue é o banco. O texto é só o do nome, sem o
+     * {@code (}.
+     *
+     * @param packageName nome normalizado antes do ponto, ou {@code null}
+     * @param name nome normalizado
+     * @param arguments seguido de {@code (}
+     */
+    public record Call(String packageName, String name, boolean arguments, String sql, SourcePosition position)
+            implements Part {
     }
 }

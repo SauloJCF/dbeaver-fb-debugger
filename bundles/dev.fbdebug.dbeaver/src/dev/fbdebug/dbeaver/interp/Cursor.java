@@ -16,7 +16,8 @@ import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 
 /**
  * Cursor da Rotina: declarado ({@code DECLARE ... CURSOR}) ou de um {@code FOR SELECT ... AS CURSOR}, aberto no
- * servidor na transação da Sessão de debug.
+ * servidor na transação da Sessão de debug; ou, num {@code FOR SELECT} sobre procedure interpretada, sobre as linhas
+ * que ela emite ({@link #openRows}).
  *
  * <p>
  * Sem {@code SCROLL}, as linhas são lidas uma a uma do servidor. Com {@code SCROLL}, todas são lidas no
@@ -37,6 +38,8 @@ final class Cursor implements AutoCloseable {
     /** Variáveis que o {@code SELECT} usa, que não podem mudar com o cursor aberto. */
     private Set<String> variables = Set.of();
     private PreparedStatement statement;
+    /** Aberto sobre linhas que o Interpretador entrega ({@link #openRows}), sem nada no servidor. */
+    private boolean interpreted;
     private ResultSet resultSet;
     private boolean exhausted;
     private List<String> labels;
@@ -70,7 +73,26 @@ final class Cursor implements AutoCloseable {
     }
 
     boolean isOpen() {
-        return statement != null;
+        return statement != null || interpreted;
+    }
+
+    /**
+     * Cursor de um {@code FOR SELECT} sobre procedure interpretada: cada linha que ela emite chega por
+     * {@link #current(List)}.
+     *
+     * @param labels nomes das colunas, que são os campos do cursor
+     * @param types tipos declarados das colunas
+     */
+    void openRows(List<String> labels, List<String> types) throws SQLException {
+        close();
+        this.labels = List.copyOf(labels);
+        this.types = List.copyOf(types);
+        interpreted = true;
+    }
+
+    /** Linha atual de um cursor aberto por {@link #openRows}. */
+    void current(List<Object> row) {
+        current = row;
     }
 
     /**
@@ -178,6 +200,7 @@ final class Cursor implements AutoCloseable {
     public void close() throws SQLException {
         PreparedStatement open = statement;
         statement = null;
+        interpreted = false;
         resultSet = null;
         rows = null;
         current = null;

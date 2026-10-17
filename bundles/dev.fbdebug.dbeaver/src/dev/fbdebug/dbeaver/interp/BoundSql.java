@@ -8,9 +8,10 @@ import java.util.List;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
 
 /**
- * Texto opaco pronto para o servidor: cada variável do escopo e cada campo de cursor ({@code cursor.campo}) vira
- * {@code CAST(? AS <tipo declarado>)}. As variáveis de contexto que só existem dentro de PSQL ({@code ROW_COUNT},
+ * Texto opaco pronto para o servidor: cada variável do escopo, cada campo de cursor ({@code cursor.campo}) e, numa
+ * trigger, cada {@code NEW.campo}/{@code OLD.campo} vira {@code CAST(? AS <tipo declarado>)}. As variáveis de contexto que só existem dentro de PSQL ({@code ROW_COUNT},
  * {@code GDSCODE}, {@code SQLCODE}, {@code SQLSTATE}) viram o valor que o Interpretador mantém no {@link Frame}.
+ * Dentro de uma package, as chamadas sem package a rotinas dela ganham o nome da package ({@link Frame#serverText}).
  *
  * @param parameters valores dos {@code ?}, na ordem do texto
  */
@@ -29,6 +30,7 @@ record BoundSql(String sql, List<Object> parameters) {
         for (Expression.Part part : expression.parts()) {
             switch (part) {
                 case Expression.Sql text -> sql.append(text.sql());
+                case Expression.Call call -> sql.append(frame.serverText(call));
                 case Expression.Name name -> {
                     Variable variable = frame.find(name.name()).orElse(null);
                     if (variable != null) {
@@ -39,11 +41,14 @@ record BoundSql(String sql, List<Object> parameters) {
                 }
                 case Expression.Field field -> {
                     Cursor cursor = frame.findCursor(field.qualifier()).orElse(null);
-                    if (cursor == null) {
-                        sql.append(field.sql()); // nome qualificado de tabela, numa subquery
-                    } else {
+                    Variable record = frame.find(field.qualifier() + "." + field.name()).orElse(null);
+                    if (cursor != null) {
                         Cursor.FieldValue value = cursor.field(field.name());
                         parameter(sql, parameters, value.type(), value.value());
+                    } else if (record != null) {
+                        parameter(sql, parameters, record.type(), record.value()); // NEW.campo, OLD.campo
+                    } else {
+                        sql.append(field.sql()); // nome qualificado de tabela, numa subquery
                     }
                 }
             }

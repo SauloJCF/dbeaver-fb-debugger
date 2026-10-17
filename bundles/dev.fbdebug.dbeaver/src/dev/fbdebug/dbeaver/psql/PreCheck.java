@@ -13,6 +13,7 @@ import dev.fbdebug.dbeaver.psql.ast.CloseCursor;
 import dev.fbdebug.dbeaver.psql.ast.Continue;
 import dev.fbdebug.dbeaver.psql.ast.CursorDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.DmlStatement;
+import dev.fbdebug.dbeaver.psql.ast.ExecuteProcedure;
 import dev.fbdebug.dbeaver.psql.ast.ExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.Exit;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
@@ -108,6 +109,8 @@ public final class PreCheck {
             }
             case DmlStatement dml -> add(dml.unsupported(), findings);
             case ExecuteStatement execute -> add(execute.unsupported(), findings);
+            case ExecuteProcedure call -> {
+            }
             case InAutonomousTransaction autonomous -> {
                 add(List.of(new UnsupportedUse(UnsupportedConstruct.IN_AUTONOMOUS_TRANSACTION,
                         autonomous.position())), findings);
@@ -145,6 +148,8 @@ public final class PreCheck {
         for (Expression.Part part : loop.select().sql().parts()) {
             if (part instanceof Expression.Name name) {
                 used.add(name.name());
+            } else if (part instanceof Expression.Field field) {
+                used.add(field.qualifier() + "." + field.name()); // NEW.campo numa trigger
             }
         }
         List<UnsupportedUse> uses = new ArrayList<>();
@@ -184,6 +189,7 @@ public final class PreCheck {
             }
             case DmlStatement dml -> dml.into().forEach(target -> sink.accept(target, dml.position()));
             case ExecuteStatement execute -> execute.into().forEach(target -> sink.accept(target, execute.position()));
+            case ExecuteProcedure call -> call.returningValues().forEach(target -> sink.accept(target, call.position()));
             case Fetch fetch -> fetch.into().forEach(target -> sink.accept(target, fetch.position()));
             case InAutonomousTransaction autonomous -> assignments(autonomous.body(), sink);
             case Leave leave -> {

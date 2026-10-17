@@ -2,32 +2,43 @@ package dev.fbdebug.dbeaver.interp;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
 
+import dev.fbdebug.dbeaver.psql.CallSites;
+import dev.fbdebug.dbeaver.psql.PreCheck;
+import dev.fbdebug.dbeaver.psql.PsqlSyntaxException;
 import dev.fbdebug.dbeaver.psql.ast.Assignment;
 import dev.fbdebug.dbeaver.psql.ast.Block;
 import dev.fbdebug.dbeaver.psql.ast.CloseCursor;
 import dev.fbdebug.dbeaver.psql.ast.Continue;
 import dev.fbdebug.dbeaver.psql.ast.CursorDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.DmlStatement;
+import dev.fbdebug.dbeaver.psql.ast.ExecuteProcedure;
 import dev.fbdebug.dbeaver.psql.ast.ExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.Exit;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.Fetch;
 import dev.fbdebug.dbeaver.psql.ast.ForExecuteStatement;
 import dev.fbdebug.dbeaver.psql.ast.ForSelect;
+import dev.fbdebug.dbeaver.psql.ast.FunctionCall;
 import dev.fbdebug.dbeaver.psql.ast.Handler;
 import dev.fbdebug.dbeaver.psql.ast.If;
 import dev.fbdebug.dbeaver.psql.ast.InAutonomousTransaction;
 import dev.fbdebug.dbeaver.psql.ast.Leave;
 import dev.fbdebug.dbeaver.psql.ast.OpenCursor;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
+import dev.fbdebug.dbeaver.psql.ast.ProcedureSource;
 import dev.fbdebug.dbeaver.psql.ast.Raise;
 import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
+import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
 import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
@@ -38,6 +49,9 @@ import dev.fbdebug.dbeaver.psql.ast.While;
 /**
  * Percorre o AST da Rotina e executa a lógica procedural no cliente (ADR 0001). O servidor recebe só Fatias DML e
  * Avaliações de expressão. Não controla a transação: isso é da {@link DebugSession}.
+ * <p>
+ * Uma chamada Step into elegível ({@link CallSites}) é interpretada, com frame próprio e a Fonte do banco da Rotina
+ * chamada, ou executada no servidor; quem escolhe é a {@link CallPolicy}.
  */
 public final class Interpreter {
 
@@ -45,12 +59,36 @@ public final class Interpreter {
     private final ExpressionEvaluator evaluator;
     private final DmlExecutor dml;
     private final ExceptionRaiser exceptions;
+    private final RoutineCatalog catalog;
+    private final CallPolicy policy;
+    /** Frames das Rotinas em execução; o primeiro é o de cima. */
+    private final Deque<Frame> frames = new ArrayDeque<>();
 
+    /** Interpretador que executa no servidor toda chamada de Rotina. */
     public Interpreter(Connection connection) {
+        this(connection, new DatabaseRoutineCatalog(connection), CallPolicy.SERVER);
+    }
+
+    /**
+     * @param catalog de onde vêm as Rotinas chamadas interpretadas e as rotinas de package que uma chamada sem
+     *            package alcança
+     */
+    public Interpreter(Connection connection, RoutineCatalog catalog, CallPolicy policy) {
         this.connection = connection;
         this.evaluator = new ExpressionEvaluator(connection);
         this.dml = new DmlExecutor(connection, evaluator);
         this.exceptions = new ExceptionRaiser(connection, evaluator);
+        this.catalog = catalog;
+        this.policy = policy;
+    }
+
+    /**
+     * Pilha de frames, do de cima (a Rotina em execução) até a Rotina raiz. Uma procedure parada no {@code SUSPEND}
+     * enquanto quem a chamou percorre o corpo do {@code FOR SELECT} sobre ela não aparece: ela volta à pilha quando
+     * o laço busca a linha seguinte.
+     */
+    public List<Frame> frames() {
+        return List.copyOf(frames);
     }
 
     /**
@@ -64,7 +102,7 @@ public final class Interpreter {
      * @return as saídas; numa function, uma só, com o nome da function e o valor do {@code RETURN}
      */
     public ProcedureResult execute(RoutineDefinition routine, List<?> inputs) throws SQLException {
-        return call(routine, inputs, null);
+        return call(routine, true, new SavepointStack(connection), values(inputs), null);
     }
 
     /**
@@ -77,33 +115,86 @@ public final class Interpreter {
      */
     public void select(RoutineDefinition routine, List<?> inputs, Consumer<List<Object>> rows)
             throws SQLException {
-        call(routine, inputs, Objects.requireNonNull(rows));
+        call(routine, true, new SavepointStack(connection), values(inputs), Objects.requireNonNull(rows));
     }
 
-    private ProcedureResult call(RoutineDefinition routine, List<?> inputs, Consumer<List<Object>> rows)
-            throws SQLException {
-        SavepointStack savepoints = new SavepointStack(connection);
+    /**
+     * Valores das entradas de uma chamada, cada um já convertido para o tipo do parâmetro, como o motor faz ao
+     * passá-los.
+     */
+    private interface Arguments {
+
+        int count();
+
+        Object value(int index, ParameterDeclaration parameter) throws SQLException;
+    }
+
+    /** Valores informados de fora (launch), convertidos pelo servidor. */
+    private Arguments values(List<?> inputs) {
+        return new Arguments() {
+
+            @Override
+            public int count() {
+                return inputs.size();
+            }
+
+            @Override
+            public Object value(int index, ParameterDeclaration parameter) throws SQLException {
+                return evaluator.convert(inputs.get(index), parameter.type());
+            }
+        };
+    }
+
+    /** Argumentos de uma chamada, avaliados no frame de quem chama. */
+    private Arguments arguments(List<Expression> arguments, Frame caller) {
+        return new Arguments() {
+
+            @Override
+            public int count() {
+                return arguments.size();
+            }
+
+            @Override
+            public Object value(int index, ParameterDeclaration parameter) throws SQLException {
+                return evaluator.evaluate(arguments.get(index), caller, parameter.type());
+            }
+        };
+    }
+
+    /**
+     * @param steppedInto ver {@link Frame#steppedInto()}
+     * @param savepoints pilha da chamada, que diz depois a quem chamou se a Rotina passou alterações para ele
+     * @param rows destino das linhas do {@code SUSPEND}, ou {@code null} para rodar como executável
+     */
+    private ProcedureResult call(RoutineDefinition routine, boolean steppedInto, SavepointStack savepoints,
+            Arguments arguments, Consumer<List<Object>> rows) throws SQLException {
+        Set<String> packageRoutines =
+                routine.packageName() == null ? Set.of() : catalog.packageRoutines(routine.packageName());
+        Frame frame = new Frame(routine, steppedInto, savepoints, rows, packageRoutines);
         savepoints.beginCall();
+        frames.push(frame);
         ProcedureResult result;
         try {
-            result = run(routine, inputs, new Frame(savepoints, rows, routine.returnValue()));
+            result = run(routine, arguments, frame);
         } catch (SQLException | RuntimeException e) {
             savepoints.undoCall(e);
             throw e;
+        } finally {
+            frames.remove(frame);
         }
         savepoints.endCall();
         return result;
     }
 
     /** @return as saídas, ou {@code null} se a Rotina roda como selecionável */
-    private ProcedureResult run(RoutineDefinition routine, List<?> inputs, Frame frame) throws SQLException {
+    private ProcedureResult run(RoutineDefinition routine, Arguments arguments, Frame frame) throws SQLException {
         refuse(routine.unsupported());
-        if (inputs.size() > routine.inputs().size()) {
+        if (arguments.count() > routine.inputs().size()) {
             throw new PsqlExecutionException(routine.displayName() + " recebe " + routine.inputs().size()
-                    + " parâmetro(s) de entrada, mas foram informados " + inputs.size());
+                    + " parâmetro(s) de entrada, mas foram informados " + arguments.count());
         }
         for (int i = 0; i < routine.inputs().size(); i++) {
-            bindInput(frame, routine.inputs().get(i), inputs, i);
+            bindInput(frame, routine.inputs().get(i), arguments, i);
         }
         for (ParameterDeclaration output : routine.outputs()) {
             frame.declare(output.name(), output.type(), output.notNull(), Variable.Kind.OUTPUT);
@@ -125,6 +216,8 @@ public final class Interpreter {
             // Na selecionável, o fim não emite linha nem valida nada.
             if (routine.returnValue() != null) {
                 result = new ProcedureResult(List.of(routine.name()), Collections.singletonList(returned(frame)));
+            } else if (routine.trigger() != null) {
+                result = triggerResult(routine, frame);
             } else if (frame.rows() == null) {
                 result = new ProcedureResult(routine.outputs().stream().map(ParameterDeclaration::name).toList(),
                         frame.outputValues());
@@ -141,11 +234,29 @@ public final class Interpreter {
         return result;
     }
 
-    private void bindInput(Frame frame, ParameterDeclaration input, List<?> inputs, int index)
+    /**
+     * Saída de uma Trigger isolada: numa {@code BEFORE}, os valores finais de {@code NEW.*}, que é o que o motor
+     * gravaria (com as atribuições da trigger); numa {@code AFTER}, nada.
+     */
+    private static ProcedureResult triggerResult(RoutineDefinition trigger, Frame frame) {
+        List<String> names = new ArrayList<>();
+        List<Object> values = new ArrayList<>();
+        if (trigger.trigger().before()) {
+            for (ParameterDeclaration input : trigger.inputs()) {
+                if (input.name().startsWith("NEW.")) {
+                    names.add(input.name());
+                    values.add(frame.get(input.name()).value());
+                }
+            }
+        }
+        return new ProcedureResult(names, values);
+    }
+
+    private void bindInput(Frame frame, ParameterDeclaration input, Arguments arguments, int index)
             throws SQLException {
         Variable variable = frame.declare(input.name(), input.type(), input.notNull(), Variable.Kind.INPUT);
-        if (index < inputs.size()) {
-            store(variable, evaluator.convert(inputs.get(index), variable.type()), frame);
+        if (index < arguments.count()) {
+            store(variable, arguments.value(index, input), frame);
         } else if (input.defaultValue() != null) {
             assign(variable, input.defaultValue(), frame);
         } else {
@@ -155,12 +266,13 @@ public final class Interpreter {
 
     /** @return o desvio que interrompeu o statement, ou {@code null} se ele terminou normalmente */
     private Jump execute(Statement statement, Frame frame) throws SQLException {
+        frame.position(statement.position());
         switch (statement) {
             case Block block -> {
                 return executeBlock(block, frame);
             }
             case Assignment assignment -> {
-                assign(frame.get(assignment.target()), assignment.value(), frame);
+                assign(assignment, frame);
                 return null;
             }
             case If branch -> {
@@ -195,6 +307,10 @@ public final class Interpreter {
             case ExecuteStatement dynamic -> {
                 refuse(dynamic.unsupported());
                 assignInto(dynamic.into(), dml.execute(dynamic, frame), frame);
+                return null;
+            }
+            case ExecuteProcedure call -> {
+                executeProcedure(call, frame);
                 return null;
             }
             case OpenCursor open -> {
@@ -301,6 +417,7 @@ public final class Interpreter {
     private Jump executeLoop(While loop, Frame frame) throws SQLException {
         while (evaluator.isTrue(loop.condition(), frame)) {
             Jump jump = execute(loop.body(), frame);
+            frame.position(loop.position());
             if (jump == null) {
                 continue;
             }
@@ -317,10 +434,18 @@ public final class Interpreter {
     /**
      * {@code FOR SELECT}: o cursor é aberto no servidor e lido linha a linha. Sair do laço, por fim, desvio ou erro,
      * fecha o cursor. Como no motor, o laço tem nível de savepoint próprio só se o nível atual já tinha alterações.
+     * Com uma procedure como única fonte, ela é interpretada sempre que der (ver {@link CallPolicy}).
      */
     private Jump executeLoop(ForSelect loop, Frame frame) throws SQLException {
         DmlStatement select = loop.select();
         refuse(select.unsupported());
+        ProcedureSource source = loop.procedure();
+        Callee callee = source == null ? null
+                : callee(CallSites.Form.FOR_SELECT, RoutineDefinition.Kind.PROCEDURE, source.packageName(),
+                        source.name(), source.position(), frame);
+        if (callee != null) {
+            return executeLoop(loop, callee, frame);
+        }
         SavepointStack.Level level = frame.savepoints().pushIfChanged();
         Jump result = null;
         try (Cursor cursor = new Cursor(loop.cursor(), false, null, loop.position())) {
@@ -348,6 +473,235 @@ public final class Interpreter {
         }
         frame.savepoints().release(level);
         return result;
+    }
+
+    /**
+     * {@code FOR SELECT} sobre procedure interpretada, que roda como gerador: a cada {@code SUSPEND} dela, o corpo
+     * do laço roda com ela parada ali, fora da pilha de frames e sem savepoint aberto; a linha seguinte a faz
+     * continuar. Sair do laço, por desvio ou erro de quem chama, abandona a procedure parada, como o motor faz ao
+     * fechar o cursor. O que ela altera vai para o nível de quem chama, como num cursor do servidor.
+     */
+    private Jump executeLoop(ForSelect loop, Callee callee, Frame frame) throws SQLException {
+        ProcedureSource source = loop.procedure();
+        RoutineDefinition procedure = callee.routine();
+        List<Integer> columns = columns(source, procedure);
+        List<String> labels = new ArrayList<>();
+        List<String> types = new ArrayList<>();
+        for (int i = 0; i < columns.size(); i++) {
+            ParameterDeclaration output = procedure.outputs().get(columns.get(i));
+            labels.add(source.columns().isEmpty() ? output.name() : source.columns().get(i).label());
+            types.add(output.type());
+        }
+        SavepointStack.Level level = frame.savepoints().pushIfChanged();
+        SavepointStack savepoints = new SavepointStack(connection);
+        Object owner = new Object();
+        Jump result = null;
+        try (Cursor cursor = new Cursor(loop.cursor(), false, null, loop.position())) {
+            cursor.openRows(labels, types);
+            frame.clearRowCount();
+            frame.enterLoop(cursor);
+            try {
+                frame.savepoints().beforeChange();
+                call(procedure, callee.steppedInto(), savepoints, arguments(source.arguments(), frame), row -> {
+                    if (savepoints.takeChanges()) {
+                        frame.savepoints().changed();
+                    }
+                    List<Frame> paused = pauseAbove(frame);
+                    try {
+                        List<Object> values = new ArrayList<>(columns.size());
+                        columns.forEach(column -> values.add(row.get(column)));
+                        Jump jump = iterate(loop, cursor, values, frame);
+                        if (jump != null && !jump.targets(loop.label())) {
+                            throw new LoopExit(owner, jump, null);
+                        }
+                        if (jump != null && jump.kind() == Jump.Kind.LEAVE) {
+                            throw new LoopExit(owner, null, null);
+                        }
+                        frame.savepoints().beforeChange(); // a procedure continua e pode alterar dados
+                    } catch (SQLException e) {
+                        throw new LoopExit(owner, null, e);
+                    } finally {
+                        resume(paused);
+                    }
+                });
+                if (savepoints.takeChanges()) {
+                    frame.savepoints().changed();
+                }
+            } catch (LoopExit exit) {
+                if (exit.owner != owner) {
+                    throw exit; // de um laço de fora, que passa por esta procedure parada
+                }
+                if (exit.error != null) {
+                    throw exit.error;
+                }
+                result = exit.jump;
+            } finally {
+                frame.leaveLoop(cursor);
+            }
+        }
+        frame.savepoints().release(level);
+        return result;
+    }
+
+    /** Uma linha do {@code FOR SELECT} sobre procedure interpretada: alvos do {@code INTO} e corpo do laço. */
+    private Jump iterate(ForSelect loop, Cursor cursor, List<Object> values, Frame frame) throws SQLException {
+        frame.position(loop.position());
+        frame.rowFetched();
+        cursor.current(values);
+        List<String> into = loop.select().into();
+        if (!into.isEmpty()) {
+            assignInto(into, dml.assignable(values, into, frame), frame);
+        }
+        return execute(loop.body(), frame);
+    }
+
+    /** Posição de cada coluna do {@code SELECT} entre as saídas da procedure. */
+    private static List<Integer> columns(ProcedureSource source, RoutineDefinition callee) {
+        List<String> outputs = callee.outputs().stream().map(ParameterDeclaration::name).toList();
+        if (source.columns().isEmpty()) {
+            List<Integer> all = new ArrayList<>();
+            for (int i = 0; i < outputs.size(); i++) {
+                all.add(i);
+            }
+            return all;
+        }
+        List<Integer> columns = new ArrayList<>();
+        for (ProcedureSource.Column column : source.columns()) {
+            int index = outputs.indexOf(column.name());
+            if (index < 0) {
+                throw new PsqlExecutionException(source.position() + ": " + callee.displayName()
+                        + " não tem a saída " + column.name());
+            }
+            columns.add(index);
+        }
+        return columns;
+    }
+
+    /** Tira da pilha os frames acima de {@code frame}: Rotinas paradas no {@code SUSPEND}. */
+    private List<Frame> pauseAbove(Frame frame) {
+        List<Frame> paused = new ArrayList<>();
+        while (frames.peek() != frame) {
+            paused.add(frames.pop());
+        }
+        return paused;
+    }
+
+    private void resume(List<Frame> paused) {
+        for (int i = paused.size() - 1; i >= 0; i--) {
+            frames.push(paused.get(i));
+        }
+    }
+
+    /**
+     * Saída de um {@code FOR SELECT} sobre procedure interpretada, de dentro do corpo do laço: atravessa a
+     * procedure parada no {@code SUSPEND} sem que um {@code WHEN} dela a trate (os handlers só tratam
+     * {@link SQLException}).
+     */
+    private static final class LoopExit extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        /** O laço que trata a saída. */
+        final transient Object owner;
+        /** Desvio para fora do laço, ou {@code null} se o laço só termina. */
+        final transient Jump jump;
+        /** Erro do corpo do laço, que continua subindo de quem chama; ou {@code null}. */
+        final SQLException error;
+
+        LoopExit(Object owner, Jump jump, SQLException error) {
+            super(null, null, false, false);
+            this.owner = owner;
+            this.jump = jump;
+            this.error = error;
+        }
+    }
+
+    /**
+     * {@code EXECUTE PROCEDURE}. O que a procedure altera vai para o nível de quem chama; no servidor não há como
+     * saber se ela alterou algo, e conta como alteração.
+     */
+    private void executeProcedure(ExecuteProcedure call, Frame frame) throws SQLException {
+        Callee callee = callee(CallSites.Form.EXECUTE_PROCEDURE, RoutineDefinition.Kind.PROCEDURE,
+                call.packageName(), call.name(), call.position(), frame);
+        frame.savepoints().beforeChange();
+        List<Object> outputs;
+        if (callee == null) {
+            outputs = dml.executeProcedure(frame.serverName(call.packageName(), call.name()), call.arguments(),
+                    frame);
+            frame.savepoints().changed();
+        } else {
+            outputs = callInterpreted(callee, call.arguments(), frame).values();
+        }
+        if (!call.returningValues().isEmpty()) {
+            assignInto(call.returningValues(), dml.assignable(outputs, call.returningValues(), frame), frame);
+        }
+    }
+
+    /**
+     * Atribuição. {@code x = F(...)} interpretada: o valor que a function devolve é convertido para o tipo de
+     * {@code x}, como numa atribuição.
+     */
+    private void assign(Assignment assignment, Frame frame) throws SQLException {
+        Variable target = frame.get(assignment.target());
+        FunctionCall call = assignment.call();
+        Callee callee = call == null ? null
+                : callee(CallSites.Form.ASSIGNMENT, RoutineDefinition.Kind.FUNCTION, call.packageName(),
+                        call.name(), call.position(), frame);
+        if (callee == null) {
+            assign(target, assignment.value(), frame);
+            return;
+        }
+        frame.savepoints().beforeChange();
+        Object value = callInterpreted(callee, call.arguments(), frame).values().get(0);
+        store(target, evaluator.assignable(Collections.singletonList(value), List.of(target.type())).get(0), frame);
+    }
+
+    /** Executável ou function interpretada. O que ela alterou passa para o nível de quem chama. */
+    private ProcedureResult callInterpreted(Callee callee, List<Expression> arguments, Frame caller)
+            throws SQLException {
+        SavepointStack savepoints = new SavepointStack(connection);
+        ProcedureResult result =
+                call(callee.routine(), callee.steppedInto(), savepoints, arguments(arguments, caller), null);
+        if (savepoints.takeChanges()) {
+            caller.savepoints().changed();
+        }
+        return result;
+    }
+
+    /**
+     * Rotina chamada a interpretar.
+     *
+     * @param steppedInto a política escolheu o step into (ver {@link Frame#steppedInto()})
+     */
+    private record Callee(RoutineDefinition routine, boolean steppedInto) {
+    }
+
+    /**
+     * Rotina chamada a interpretar, ou {@code null} para executar a chamada no servidor: quando a política pede o
+     * servidor (exceto no {@code FOR SELECT} e numa rotina privada da package de quem chama, ver
+     * {@link CallPolicy}), quando o nome não é de Rotina PSQL com Fonte do banco, ou quando a Fonte dela tem
+     * construção que o Interpretador não executa (nesse caso a Rotina roda inteira no servidor, que é o gabarito).
+     */
+    private Callee callee(CallSites.Form form, RoutineDefinition.Kind kind, String packageName, String name,
+            SourcePosition position, Frame caller) throws SQLException {
+        boolean steppedInto = policy.stepInto(new CallSites.CallSite(form, packageName, name, position), caller);
+        if (!steppedInto && form != CallSites.Form.FOR_SELECT && !isPrivate(packageName, name, caller)) {
+            return null;
+        }
+        RoutineDefinition routine;
+        try {
+            routine = catalog.find(kind, caller.routine().packageName(), packageName, name).orElse(null);
+        } catch (PsqlSyntaxException e) {
+            return null;
+        }
+        return routine == null || !PreCheck.scan(routine).isEmpty() ? null : new Callee(routine, steppedInto);
+    }
+
+    /** Rotina privada da package de quem chama: no servidor, fora da package, ela não existe. */
+    private boolean isPrivate(String packageName, String name, Frame caller) throws SQLException {
+        String callerPackage = caller.routine().packageName();
+        return callerPackage != null && (packageName == null || packageName.equals(callerPackage))
+                && catalog.privateRoutines(callerPackage).contains(name);
     }
 
     /** {@code FOR EXECUTE STATEMENT}: como o {@code FOR SELECT}, mas não muda o {@code ROW_COUNT}. */
@@ -423,8 +777,9 @@ public final class Interpreter {
         if (frame.rows() == null) {
             return Jump.EXIT;
         }
-        frame.rows().accept(Collections.unmodifiableList(row));
         frame.savepoints().suspended();
+        frame.rows().accept(Collections.unmodifiableList(row));
+        frame.savepoints().resumed();
         return null;
     }
 

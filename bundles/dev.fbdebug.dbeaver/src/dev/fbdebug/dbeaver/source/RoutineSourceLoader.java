@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import dev.fbdebug.dbeaver.psql.Identifiers;
+import dev.fbdebug.dbeaver.psql.RoutineParser;
 
 /**
  * Lê a Fonte do banco de uma Rotina. O corpo vem dos metadados ({@code RDB$PROCEDURE_SOURCE},
@@ -63,6 +64,43 @@ public final class RoutineSourceLoader {
             SELECT RDB$PACKAGE_HEADER_SOURCE, RDB$PACKAGE_BODY_SOURCE
             FROM RDB$PACKAGES
             WHERE RDB$PACKAGE_NAME = ?""";
+
+    private static final String TRIGGER_SQL = """
+            SELECT RDB$RELATION_NAME, RDB$TRIGGER_TYPE, RDB$TRIGGER_SOURCE
+            FROM RDB$TRIGGERS
+            WHERE RDB$TRIGGER_NAME = ?""";
+
+    private static final String COLUMNS_SQL = """
+            SELECT RF.RDB$FIELD_NAME AS NAME,
+                   F.RDB$FIELD_TYPE, F.RDB$FIELD_SUB_TYPE, F.RDB$FIELD_SCALE, F.RDB$FIELD_PRECISION,
+                   F.RDB$CHARACTER_LENGTH, CS.RDB$CHARACTER_SET_NAME
+            FROM RDB$RELATION_FIELDS RF
+            JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
+            LEFT JOIN RDB$CHARACTER_SETS CS ON CS.RDB$CHARACTER_SET_ID = F.RDB$CHARACTER_SET_ID
+            WHERE RF.RDB$RELATION_NAME = ?
+            ORDER BY RF.RDB$FIELD_POSITION""";
+
+    /** {@code RDB$TRIGGER_TYPE}: os bits que separam trigger de tabela, de banco e de DDL. */
+    private static final long TRIGGER_TYPE_MASK = 0x6000;
+    private static final long TRIGGER_TYPE_DB = 0x2000;
+
+    /** Eventos de trigger de banco, pelo {@code RDB$TRIGGER_TYPE} menos {@link #TRIGGER_TYPE_DB}. */
+    private static final List<String> DATABASE_EVENTS = List.of("ON CONNECT", "ON DISCONNECT",
+            "ON TRANSACTION START", "ON TRANSACTION COMMIT", "ON TRANSACTION ROLLBACK");
+
+    /** Ações de trigger de tabela, pelo número de cada posição de {@code RDB$TRIGGER_TYPE}. */
+    private static final List<String> TRIGGER_ACTIONS = List.of("", "INSERT", "UPDATE", "DELETE");
+
+    /**
+     * Fonte do banco de uma trigger.
+     *
+     * @param text {@code CREATE TRIGGER nome FOR tabela <fase e eventos>} numa linha e, a partir da linha 2,
+     *            {@code RDB$TRIGGER_SOURCE} intacto (que começa no {@code AS}), como o editor do DBeaver mostra
+     * @param columns colunas da tabela, na ordem dela, com o tipo base de cada uma (sem o domínio, cujas restrições o
+     *            motor só confere ao gravar a linha); vazio numa trigger de banco ou de DDL
+     */
+    public record TriggerSource(String text, List<RoutineParser.Column> columns) {
+    }
 
     /**
      * Fonte do banco de uma package: o cabeçalho (onde ficam os valores padrão dos parâmetros) e o corpo (onde
@@ -190,6 +228,77 @@ public final class RoutineSourceLoader {
                         "RECREATE PACKAGE BODY " + quoted + "\nAS\n" + body);
             }
         }
+    }
+
+    /**
+     * Trigger de tabela, de banco ou de DDL (estas duas o Pré-check recusa). O cabeçalho segue o de
+     * {@code FireBirdUtils.getTriggerSourceWithHeader} do DBeaver 26.0.2, sem {@code ACTIVE} nem {@code POSITION};
+     * numa trigger de DDL, que o DBeaver não mostra, os eventos viram {@code ANY DDL STATEMENT}.
+     *
+     * @param name nome da trigger como está nos metadados
+     */
+    public static TriggerSource loadTrigger(Connection connection, String name) throws SQLException {
+        String relation;
+        long type;
+        String body;
+        try (PreparedStatement statement = connection.prepareStatement(TRIGGER_SQL)) {
+            statement.setString(1, name);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    throw new SQLException("Trigger não encontrada: " + name);
+                }
+                relation = trimmed(resultSet, "RDB$RELATION_NAME");
+                type = resultSet.getLong("RDB$TRIGGER_TYPE");
+                body = resultSet.getString("RDB$TRIGGER_SOURCE");
+            }
+        }
+        if (body == null) {
+            throw new SQLException("Trigger sem Fonte do banco (externa ou sem fonte): " + name);
+        }
+        StringBuilder text = new StringBuilder("CREATE TRIGGER ").append(Identifiers.quote(name)).append(' ');
+        List<RoutineParser.Column> columns = new ArrayList<>();
+        if (relation != null) {
+            text.append("FOR ").append(Identifiers.quote(relation)).append(' ').append(tableTriggerType(type));
+            try (PreparedStatement statement = connection.prepareStatement(COLUMNS_SQL)) {
+                statement.setString(1, relation);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        columns.add(new RoutineParser.Column(trimmed(resultSet, "NAME"),
+                                FieldTypes.render(resultSet.getInt("RDB$FIELD_TYPE"),
+                                        intOrNull(resultSet, "RDB$FIELD_SUB_TYPE"),
+                                        intOrNull(resultSet, "RDB$FIELD_SCALE"),
+                                        intOrNull(resultSet, "RDB$FIELD_PRECISION"),
+                                        intOrNull(resultSet, "RDB$CHARACTER_LENGTH"),
+                                        trimmed(resultSet, "RDB$CHARACTER_SET_NAME"))));
+                    }
+                }
+            }
+        } else if ((type & TRIGGER_TYPE_MASK) == TRIGGER_TYPE_DB) {
+            text.append(DATABASE_EVENTS.get((int) (type - TRIGGER_TYPE_DB)));
+        } else {
+            text.append((type & 1) == 0 ? "BEFORE" : "AFTER").append(" ANY DDL STATEMENT");
+        }
+        return new TriggerSource(text.append('\n').append(body).toString(), columns);
+    }
+
+    /**
+     * Fase e eventos de uma trigger de tabela. O {@code RDB$TRIGGER_TYPE} guarda até três ações (1 = INSERT,
+     * 2 = UPDATE, 3 = DELETE) em pares de bits a partir do bit 1, e é ímpar numa {@code BEFORE} (1 = BEFORE INSERT,
+     * 17 = BEFORE INSERT OR UPDATE, 114 = AFTER INSERT OR UPDATE OR DELETE).
+     */
+    private static String tableTriggerType(long type) {
+        boolean before = (type & 1) == 1;
+        long slots = before ? type + 1 : type;
+        StringBuilder text = new StringBuilder(before ? "BEFORE" : "AFTER");
+        String separator = " ";
+        for (int shift = 1; shift <= 5; shift += 2) {
+            int action = (int) ((slots >> shift) & 3);
+            if (action != 0) {
+                text.append(separator).append(TRIGGER_ACTIONS.get(action));
+                separator = " OR ";
+            }
+        }
+        return text.toString();
     }
 
     /** {@code (a, b)} e a quebra de linha, como o DBeaver; sem entradas, nada. */

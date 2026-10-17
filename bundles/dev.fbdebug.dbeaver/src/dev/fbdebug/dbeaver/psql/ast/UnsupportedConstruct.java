@@ -7,8 +7,8 @@ package dev.fbdebug.dbeaver.psql.ast;
  *
  * <p>
  * O que a gramática nem reconhece também é recusado pelo Pré-check, como trecho não reconhecido, com a posição
- * do erro de sintaxe. É o caso, por enquanto, de {@code EXECUTE PROCEDURE} e sub-rotinas, que entram nas
- * próximas issues.
+ * do erro de sintaxe. É o caso, por enquanto, das sub-rotinas ({@code DECLARE PROCEDURE}/{@code DECLARE FUNCTION}),
+ * que entram na issue 11.
  */
 public enum UnsupportedConstruct {
 
@@ -47,7 +47,16 @@ public enum UnsupportedConstruct {
      * Interpretador, então no servidor a função daria sempre {@code NULL}. {@code GDSCODE}, {@code SQLCODE} e
      * {@code SQLSTATE} são suportados.
      */
-    RDB_ERROR("RDB$ERROR");
+    RDB_ERROR("RDB$ERROR"),
+
+    /**
+     * Trigger de banco ({@code ON CONNECT}, {@code ON DISCONNECT}, {@code ON TRANSACTION ...}): só a trigger de
+     * tabela é depurável, como Trigger isolada.
+     */
+    DATABASE_TRIGGER("trigger de banco (ON CONNECT, ON DISCONNECT, ON TRANSACTION)"),
+
+    /** Trigger de DDL ({@code BEFORE | AFTER ANY DDL STATEMENT}, {@code ... CREATE TABLE} etc.). */
+    DDL_TRIGGER("trigger de DDL");
 
     private final String syntax;
 

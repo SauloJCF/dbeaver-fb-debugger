@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import dev.fbdebug.dbeaver.interp.CallPolicy;
+import dev.fbdebug.dbeaver.interp.DatabaseRoutineCatalog;
 import dev.fbdebug.dbeaver.interp.Interpreter;
 import dev.fbdebug.dbeaver.interp.ProcedureResult;
 import dev.fbdebug.dbeaver.psql.Identifiers;
@@ -32,19 +34,29 @@ public final class DifferentialHarness {
 
     private final TestDatabase database;
     private final List<String> tables;
+    private final CallPolicy policy;
 
     public DifferentialHarness(TestDatabase database) {
-        this(database, List.of());
+        this(database, List.of(), CallPolicy.SERVER);
     }
 
-    private DifferentialHarness(TestDatabase database, List<String> tables) {
+    private DifferentialHarness(TestDatabase database, List<String> tables, CallPolicy policy) {
         this.database = database;
         this.tables = List.copyOf(tables);
+        this.policy = policy;
     }
 
     /** Harness que compara também o conteúdo destas tabelas, lido antes do rollback de cada execução. */
     public DifferentialHarness tables(String... names) {
-        return new DifferentialHarness(database, Arrays.asList(names));
+        return new DifferentialHarness(database, Arrays.asList(names), policy);
+    }
+
+    /**
+     * Harness em que o Interpretador escolhe com {@code policy} entre interpretar e executar no servidor cada
+     * chamada elegível. O padrão é executar todas no servidor.
+     */
+    public DifferentialHarness calls(CallPolicy policy) {
+        return new DifferentialHarness(database, tables, policy);
     }
 
     /**
@@ -92,6 +104,86 @@ public final class DifferentialHarness {
      */
     public void assertSameExecuteBlock(String block, Object... inputs) throws SQLException {
         assertSameRows(Target.executeBlock(block), Arrays.asList(inputs));
+    }
+
+    /**
+     * Trigger isolada: {@code dml} executado no servidor dispara a trigger, e o Interpretador roda a trigger com
+     * {@code inputs} ({@code NEW.campo}, {@code OLD.campo}, {@code INSERTING}, {@code UPDATING}, {@code DELETING};
+     * os que faltarem valem {@code NULL}, e {@code FALSE} nos eventos). Compara a exceção e as tabelas (que não devem
+     * incluir a da trigger, que só o DML nativo grava) e, com {@code writtenRow}, os {@code NEW.*} finais com a linha
+     * gravada, lida por esse {@code SELECT} depois do DML.
+     *
+     * @param writtenRow {@code SELECT * FROM tabela WHERE ...} da linha gravada; {@code null} numa trigger
+     *            {@code AFTER} ou num {@code DELETE}
+     */
+    public void assertSameTrigger(String trigger, String dml, String writtenRow, Map<String, Object> inputs)
+            throws SQLException {
+        String call = "trigger " + trigger + " [" + dml + "]";
+        Outcome expected;
+        try (Connection connection = database.connect()) {
+            connection.setAutoCommit(false);
+            try {
+                List<String> names = new ArrayList<>();
+                List<List<Object>> rows = new ArrayList<>();
+                SQLException error = null;
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute(dml);
+                    if (writtenRow != null) {
+                        readRows(statement.executeQuery(writtenRow), true, names, rows);
+                    }
+                } catch (SQLException e) {
+                    error = e;
+                }
+                expected = new Outcome(names, rows, error, snapshot(connection));
+            } finally {
+                connection.rollback();
+            }
+        }
+        Outcome actual;
+        try (Connection connection = database.connect()) {
+            connection.setAutoCommit(false);
+            try {
+                RoutineSourceLoader.TriggerSource source = RoutineSourceLoader.loadTrigger(connection, trigger);
+                RoutineDefinition definition = RoutineParser.parseTrigger(source.text(), source.columns());
+                List<PreCheck.Finding> findings = PreCheck.scan(definition);
+                if (!findings.isEmpty()) {
+                    throw new AssertionError(trigger + ": Pré-check recusou a Rotina: " + findings);
+                }
+                List<String> declared = definition.inputs().stream().map(ParameterDeclaration::name).toList();
+                if (!declared.containsAll(inputs.keySet())) {
+                    throw new AssertionError(trigger + ": entradas desconhecidas em " + inputs.keySet()
+                            + "; a trigger tem " + declared);
+                }
+                List<Object> values = new ArrayList<>();
+                for (ParameterDeclaration input : definition.inputs()) {
+                    values.add(inputs.containsKey(input.name()) ? inputs.get(input.name())
+                            : input.type().equals("BOOLEAN") ? Boolean.FALSE : null);
+                }
+                List<String> names = new ArrayList<>();
+                List<List<Object>> rows = new ArrayList<>();
+                SQLException error = null;
+                try {
+                    ProcedureResult result = new Interpreter(connection, new DatabaseRoutineCatalog(connection),
+                            policy).execute(definition, values);
+                    result.names().forEach(name -> names.add(name.substring("NEW.".length())));
+                    rows.add(result.values());
+                } catch (SQLException e) {
+                    error = e;
+                }
+                actual = new Outcome(names, rows, error, snapshot(connection));
+            } finally {
+                connection.rollback();
+            }
+        }
+        OutputComparison.assertSameError(call, expected.error(), actual.error());
+        if (expected.error() == null && writtenRow != null) {
+            if (expected.rows().size() != 1) {
+                throw new AssertionError(writtenRow + " devolveu " + expected.rows().size() + " linha(s)");
+            }
+            OutputComparison.assertSame(call, expected.names(), expected.rows().get(0), actual.names(),
+                    actual.rows().get(0));
+        }
+        OutputComparison.assertSameTables(call, expected.tables(), actual.tables());
     }
 
     private void assertSameOutputs(Target target, List<Object> inputs) throws SQLException {
@@ -181,7 +273,8 @@ public final class DifferentialHarness {
                 List<String> names = definition.outputs().stream().map(ParameterDeclaration::name).toList();
                 List<List<Object>> rows = new ArrayList<>();
                 try {
-                    Interpreter interpreter = new Interpreter(connection);
+                    Interpreter interpreter =
+                            new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy);
                     if (select) {
                         interpreter.select(definition, inputs, rows::add);
                     } else {

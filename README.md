@@ -22,6 +22,8 @@ Gera o plugin em `bundles/dev.fbdebug.dbeaver/target/` e o repositório p2 insta
 
 O parser PSQL é gerado pelo ANTLR a partir de `bundles/dev.fbdebug.dbeaver/antlr4/` em `target/generated-sources/antlr4/` (que o `build.properties` inclui como fonte). O runtime do ANTLR vai embutido no plugin (`lib/`).
 
+Depois de mudar a gramática, use `.\mvnw clean verify`: a compilação incremental do Tycho não recompila as classes que só usam as constantes de token do léxico (o Java as embute), e um token novo desloca os números.
+
 ### Testes diferenciais
 
 O `verify` roda os testes JUnit do plugin, e os Testes diferenciais (ADR 0005) precisam de um **Firebird 5 local**:

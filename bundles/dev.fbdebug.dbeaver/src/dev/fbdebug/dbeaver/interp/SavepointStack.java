@@ -52,8 +52,13 @@ final class SavepointStack {
     /** Blocos cujo handler está em execução; o primeiro é o mais interno. */
     private final Deque<Level> handlers = new ArrayDeque<>();
     private long opened;
-    /** Savepoint da chamada: um erro que sai da Rotina desfaz o que ela fez (desde o último {@code SUSPEND}). */
+    /**
+     * Savepoint da chamada: um erro que sai da Rotina desfaz o que ela fez (desde o último {@code SUSPEND}). Não
+     * existe enquanto a Rotina está parada no {@code SUSPEND}.
+     */
     private Savepoint call;
+    /** Alterações que já passaram para quem chamou a Rotina, no fim do bloco principal ou num {@code SUSPEND}. */
+    private boolean changed;
 
     SavepointStack(Connection connection) {
         this.connection = connection;
@@ -66,20 +71,30 @@ final class SavepointStack {
 
     /** Fim normal da chamada: o que ela alterou fica. */
     void endCall() throws SQLException {
-        connection.releaseSavepoint(call);
-        call = null;
+        if (call != null) {
+            connection.releaseSavepoint(call);
+            call = null;
+        }
     }
 
-    /** Erro que saiu da Rotina: desfaz o que ela alterou. Falha do rollback fica suprimida em {@code cause}. */
+    /**
+     * Erro que saiu da Rotina: desfaz o que ela alterou. Falha do rollback fica suprimida em {@code cause}. Parada
+     * no {@code SUSPEND} (quem a chamou desistiu das linhas), não há o que desfazer.
+     */
     void undoCall(Exception cause) {
-        Savepoints.undo(connection, call, cause);
-        call = null;
+        if (call != null) {
+            Savepoints.undo(connection, call, cause);
+            call = null;
+        }
     }
 
     /**
      * {@code SUSPEND} de procedure selecionável. O motor passa para a busca da linha tudo o que a Rotina alterou até
      * ali, em todos os níveis, e os níveis seguem abertos, mas vazios. Depois disso, um erro, tratado ou não, não
      * desfaz mais o que veio antes do {@code SUSPEND}, e um {@code FOR SELECT} não conta essas alterações.
+     * <p>
+     * Enquanto a Rotina está parada, nenhum savepoint dela fica aberto no servidor: quem a chamou pode estar
+     * percorrendo um {@code FOR SELECT} sobre ela, com savepoints próprios. A Rotina continua com {@link #resumed()}.
      */
     void suspended() throws SQLException {
         for (Level level : levels) { // de cima para baixo: dos savepoints mais novos para os mais velhos
@@ -87,10 +102,26 @@ final class SavepointStack {
                 connection.releaseSavepoint(level.savepoint);
                 level.savepoint = null;
             }
+            changed |= level.changes;
             level.changes = false;
         }
         connection.releaseSavepoint(call);
+        call = null;
+    }
+
+    /** Busca da linha seguinte: a Rotina continua depois do {@code SUSPEND}. */
+    void resumed() throws SQLException {
         call = connection.setSavepoint();
+    }
+
+    /**
+     * A Rotina passou alterações para quem a chamou desde a última consulta: o nível de quem chama passa a ter
+     * alterações.
+     */
+    boolean takeChanges() {
+        boolean result = changed;
+        changed = false;
+        return result;
     }
 
     /** @param catches bloco com {@code WHEN} */
@@ -188,6 +219,8 @@ final class SavepointStack {
     private void merge(Level closed, Level below) throws SQLException {
         if (below != null) {
             below.changes |= closed.changes;
+        } else {
+            changed |= closed.changes;
         }
         if (closed.savepoint == null) {
             return;

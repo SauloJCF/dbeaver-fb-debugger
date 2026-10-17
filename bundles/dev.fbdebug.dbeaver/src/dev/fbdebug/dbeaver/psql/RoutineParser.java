@@ -12,6 +12,7 @@ import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
 
+import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
@@ -25,8 +26,10 @@ public final class RoutineParser {
     }
 
     /**
-     * @param text {@code CREATE [OR ALTER] PROCEDURE ...}, {@code CREATE [OR ALTER] FUNCTION ...} ou
-     *            {@code EXECUTE BLOCK ...} completo. As posições do AST são deste texto (linha 1 é a primeira dele).
+     * @param text {@code CREATE [OR ALTER] PROCEDURE ...}, {@code CREATE [OR ALTER] FUNCTION ...},
+     *            {@code EXECUTE BLOCK ...} ou {@code CREATE [OR ALTER] TRIGGER ...} completo. As posições do AST são
+     *            deste texto (linha 1 é a primeira dele). Uma trigger sai sem entradas; para executá-la, ver
+     *            {@link #parseTrigger}.
      * @throws PsqlSyntaxException no primeiro trecho não reconhecido
      */
     public static RoutineDefinition parse(String text) {
@@ -66,9 +69,46 @@ public final class RoutineParser {
                     : new ParameterDeclaration(input.name(), input.type(), input.notNull(),
                             declared.get(i).defaultValue(), input.position()));
         }
-        return new RoutineDefinition(routine.kind(), routine.packageName(), routine.name(), inputs,
-                routine.outputs(), routine.returnValue(), routine.declarations(), routine.cursors(), routine.body(),
-                routine.selectable(), routine.unsupported());
+        return routine.withInputs(inputs);
+    }
+
+    /**
+     * Coluna da tabela de uma trigger.
+     *
+     * @param name nome da coluna como está nos metadados
+     * @param type tipo da coluna, como texto aceito por {@code CAST(? AS <tipo>)}
+     */
+    public record Column(String name, String type) {
+    }
+
+    /**
+     * Trigger isolada: as entradas da Rotina são {@code NEW.<coluna>} e {@code OLD.<coluna>} para cada coluna da
+     * tabela, na ordem dada, e {@code INSERTING}, {@code UPDATING} e {@code DELETING}. Sem valor, as de
+     * {@code NEW}/{@code OLD} valem {@code NULL} e as de evento, {@code FALSE}. Nenhuma é {@code NOT NULL}: o motor
+     * só valida a linha ao gravá-la, depois da trigger.
+     *
+     * @param text {@code CREATE TRIGGER ...} completo (ver {@link #parse})
+     * @param columns colunas da tabela da trigger
+     */
+    public static RoutineDefinition parseTrigger(String text, List<Column> columns) {
+        RoutineDefinition trigger = parse(text);
+        if (trigger.kind() != RoutineDefinition.Kind.TRIGGER) {
+            throw new PsqlSyntaxException("esperado CREATE TRIGGER", new SourcePosition(1, 1));
+        }
+        SourcePosition position = trigger.body().position();
+        Expression nullValue = new Expression("NULL", List.of(new Expression.Sql("NULL")), position);
+        Expression falseValue = new Expression("FALSE", List.of(new Expression.Sql("FALSE")), position);
+        List<ParameterDeclaration> inputs = new ArrayList<>();
+        for (String record : List.of("NEW", "OLD")) {
+            for (Column column : columns) {
+                inputs.add(new ParameterDeclaration(record + "." + column.name(), column.type(), false, nullValue,
+                        position));
+            }
+        }
+        for (String event : List.of("INSERTING", "UPDATING", "DELETING")) {
+            inputs.add(new ParameterDeclaration(event, "BOOLEAN", false, falseValue, position));
+        }
+        return trigger.withInputs(inputs);
     }
 
     /** Léxico e parser de um texto, parando no primeiro erro. */
