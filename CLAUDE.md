@@ -10,4 +10,4 @@ Os cinco papéis padrão (`needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` + `docs/adr/` na raiz. See `docs/agents/domain.md`.
+Single-context: `GLOSSARY.md` + `docs/adr/` na raiz. See `docs/agents/domain.md`.

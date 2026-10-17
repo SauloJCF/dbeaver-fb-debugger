@@ -1,6 +1,6 @@
 # Firebird PSQL Debugger
 
-Plugin do DBeaver CE 26.0.2 para depurar Rotinas PSQL do Firebird 5. Vocabulário em `CONTEXT.md`, decisões em `docs/adr/`.
+Plugin do DBeaver CE 26.0.2 para depurar Rotinas PSQL do Firebird 5. Vocabulário em `GLOSSARY.md`, decisões em `docs/adr/`.
 
 > Instalação e uso pela equipe: a escrever na issue 20 (`.scratch/fb-psql-debugger/issues/20-empacotamento-e-instalacao.md`).
 

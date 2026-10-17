@@ -2,7 +2,7 @@
 
 Status: needs-triage
 
-Vocabulário: ver `CONTEXT.md`. Decisões de arquitetura: `docs/adr/0001` a `0005`.
+Vocabulário: ver `GLOSSARY.md`. Decisões de arquitetura: `docs/adr/0001` a `0005`.
 
 ## Objetivo
 
