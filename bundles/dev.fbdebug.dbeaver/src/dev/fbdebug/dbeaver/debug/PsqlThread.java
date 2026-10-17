@@ -1,41 +1,58 @@
-package dev.fbdebug.dbeaver.prototype;
+package dev.fbdebug.dbeaver.debug;
 
-import org.eclipse.debug.core.DebugEvent;
-import org.eclipse.debug.core.DebugException;
+import java.util.List;
+
 import org.eclipse.debug.core.model.IBreakpoint;
 import org.eclipse.debug.core.model.IStackFrame;
 import org.eclipse.debug.core.model.IThread;
 
-final class PrototypeThread extends PrototypeDebugElement implements IThread {
+import dev.fbdebug.dbeaver.interp.Frame;
 
-    private final PrototypeDebugTarget target;
-    private final PrototypeStackFrame frame;
-    private volatile boolean suspended = true;
+/**
+ * A execução da Rotina. Os stack frames são os frames do Interpretador, do de cima até a Rotina raiz, e só existem
+ * com a execução pausada; pausa, step e resume entram com os breakpoints (issue 14).
+ */
+final class PsqlThread extends PsqlDebugElement implements IThread {
 
-    PrototypeThread(PrototypeDebugTarget target) {
+    private final PsqlDebugTarget target;
+    private volatile boolean suspended;
+    private volatile IStackFrame[] stackFrames = new IStackFrame[0];
+
+    PsqlThread(PsqlDebugTarget target) {
         super(target);
         this.target = target;
-        this.frame = new PrototypeStackFrame(this);
     }
 
-    void announceSuspended(int detail) {
+    void started() {
         fireCreationEvent();
-        fireSuspendEvent(detail);
     }
 
-    void announceTerminated() {
+    void terminated() {
         suspended = false;
+        stackFrames = new IStackFrame[0];
         fireTerminateEvent();
+    }
+
+    /** Monta os stack frames da pausa; chamado com a execução parada. */
+    void suspended(int detail) {
+        List<Frame> frames = target.frames();
+        IStackFrame[] built = new IStackFrame[frames.size()];
+        for (int i = 0; i < frames.size(); i++) {
+            built[i] = new PsqlStackFrame(this, frames.get(i));
+        }
+        stackFrames = built;
+        suspended = true;
+        fireSuspendEvent(detail);
     }
 
     @Override
     public IStackFrame[] getStackFrames() {
-        return isSuspended() ? new IStackFrame[] {frame} : new IStackFrame[0];
+        return isSuspended() ? stackFrames : new IStackFrame[0];
     }
 
     @Override
     public boolean hasStackFrames() {
-        return isSuspended();
+        return isSuspended() && stackFrames.length > 0;
     }
 
     @Override
@@ -45,12 +62,13 @@ final class PrototypeThread extends PrototypeDebugElement implements IThread {
 
     @Override
     public IStackFrame getTopStackFrame() {
-        return isSuspended() ? frame : null;
+        IStackFrame[] frames = getStackFrames();
+        return frames.length == 0 ? null : frames[0];
     }
 
     @Override
     public String getName() {
-        return "PROTOTIPO";
+        return target.getName();
     }
 
     @Override
@@ -60,7 +78,7 @@ final class PrototypeThread extends PrototypeDebugElement implements IThread {
 
     @Override
     public boolean canResume() {
-        return isSuspended();
+        return false;
     }
 
     @Override
@@ -74,10 +92,7 @@ final class PrototypeThread extends PrototypeDebugElement implements IThread {
     }
 
     @Override
-    public void resume() throws DebugException {
-        suspended = false;
-        fireResumeEvent(DebugEvent.CLIENT_REQUEST);
-        target.terminate();
+    public void resume() {
     }
 
     @Override

@@ -9,3 +9,6 @@ bin/
 
 # Configuração local do banco de teste (modelo: fbdebug-test.properties.example)
 fbdebug-test.properties
+
+# banco de teste gerado
+samples/sample-db/*.FDB

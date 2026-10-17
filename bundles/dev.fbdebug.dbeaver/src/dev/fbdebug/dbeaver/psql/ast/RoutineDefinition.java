@@ -15,6 +15,8 @@ import java.util.List;
  * @param unsupported construções recusadas que aparecem dentro de expressões, fora de qualquer statement em
  *            particular, ou no cabeçalho (trigger de banco ou de DDL); ver {@link UnsupportedConstruct}
  * @param trigger cabeçalho de uma trigger; {@code null} nos outros tipos
+ * @param subroutines sub-rotinas internas implementadas na Rotina, na ordem da Fonte; vazio numa sub-rotina, que não
+ *            pode ter outras
  */
 public record RoutineDefinition(
         Kind kind,
@@ -28,7 +30,8 @@ public record RoutineDefinition(
         Block body,
         boolean selectable,
         List<UnsupportedUse> unsupported,
-        Trigger trigger) {
+        Trigger trigger,
+        List<Subroutine> subroutines) {
 
     /** Tipo de Rotina raiz. */
     public enum Kind {
@@ -41,6 +44,23 @@ public record RoutineDefinition(
         declarations = List.copyOf(declarations);
         cursors = List.copyOf(cursors);
         unsupported = List.copyOf(unsupported);
+        subroutines = List.copyOf(subroutines);
+    }
+
+    /**
+     * Sub-rotina com o tipo e o nome dados.
+     *
+     * @param kind {@link Kind#PROCEDURE} ou {@link Kind#FUNCTION}
+     * @param name nome normalizado
+     * @return {@code null} se a Rotina não implementa essa sub-rotina
+     */
+    public Subroutine subroutine(Kind kind, String name) {
+        for (Subroutine subroutine : subroutines) {
+            if (subroutine.routine().kind() == kind && subroutine.routine().name().equals(name)) {
+                return subroutine;
+            }
+        }
+        return null;
     }
 
     /** Nome para mensagens: {@code P}, {@code PKG.P} ou {@code EXECUTE BLOCK}. */
@@ -54,7 +74,7 @@ public record RoutineDefinition(
     /** A mesma Rotina com outras entradas. */
     public RoutineDefinition withInputs(List<ParameterDeclaration> newInputs) {
         return new RoutineDefinition(kind, packageName, name, newInputs, outputs, returnValue, declarations, cursors,
-                body, selectable, unsupported, trigger);
+                body, selectable, unsupported, trigger, subroutines);
     }
 
     /**

@@ -96,6 +96,14 @@ routineBody
 declaration
     : variableDeclaration
     | cursorDeclaration
+    | subroutineDeclaration
+    ;
+
+// DECLARE PROCEDURE | FUNCTION nome <assinatura> AS <corpo>, ou só a assinatura com ';' (declaração antecipada). O
+// Firebird não aceita sub-rotina dentro de sub-rotina; o AstBuilder recusa.
+subroutineDeclaration
+    : DECLARE PROCEDURE identifier procedureSignature ( AS routineBody | SEMI )
+    | DECLARE FUNCTION identifier functionSignature ( AS routineBody | SEMI )
     ;
 
 variableDeclaration

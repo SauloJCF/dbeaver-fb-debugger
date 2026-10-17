@@ -28,6 +28,7 @@ import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Subroutine;
 import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.VariableDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.While;
@@ -87,9 +88,15 @@ public final class CallSites {
         }
     }
 
-    /** @return as chamadas em ordem de posição */
+    /**
+     * @return as chamadas em ordem de posição, inclusive as dos corpos das sub-rotinas (que estão no mesmo texto); uma
+     *         chamada sem package pode ser de uma sub-rotina ({@link RoutineDefinition#subroutine})
+     */
     public static List<CallSite> of(RoutineDefinition routine) {
         List<CallSite> sites = new ArrayList<>();
+        for (Subroutine subroutine : routine.subroutines()) {
+            sites.addAll(of(subroutine.routine()));
+        }
         for (ParameterDeclaration input : routine.inputs()) {
             expression(input.defaultValue(), Form.EXPRESSION, null, sites);
         }

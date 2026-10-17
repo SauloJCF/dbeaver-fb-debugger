@@ -17,12 +17,50 @@ ADR: 0004
 
 ## Critérios de aceite
 
-- [ ] Launch de uma procedure executável mostra as saídas corretas.
-- [ ] Sem o checkbox, nada persiste; com o checkbox, persiste.
-- [ ] Terminate no meio de um laço longo encerra a sessão e faz rollback.
-- [ ] Editor sujo e construção não suportada recusam o launch com a mensagem e a posição.
-- [ ] Nenhuma transação do editor SQL do DBeaver é afetada durante a sessão.
+- [x] Launch de uma procedure executável mostra as saídas corretas.
+- [x] Sem o checkbox, nada persiste; com o checkbox, persiste.
+- [x] Terminate no meio de um laço longo encerra a sessão e faz rollback.
+- [x] Editor sujo e construção não suportada recusam o launch com a mensagem e a posição.
+- [x] Nenhuma transação do editor SQL do DBeaver é afetada durante a sessão.
 
 ## Notas
 
 - Verificar a API do DBeaver para abrir contexto de execução isolado a partir do `DBPDataSourceContainer` antes de abrir JDBC à mão.
+
+## Comments
+
+### 2026-10-17 — implementação (agente)
+
+**Estado: código pronto e compilando; a UI não foi testada no DBeaver.** Os critérios de aceite são de UI e ficam desmarcados até o teste à mão. Fora do OSGi, o que dá para testar está coberto: `DebugSessionTest` (Terminate de outra thread num laço longo, dentro de bloco com `WHEN ANY`, com "commit ao terminar" marcado: a sessão para, faz rollback e remove o Package temporário; `SNAPSHOT` não vê o que outra conexão commita durante a sessão, `READ COMMITTED` vê). A suíte inteira passa (179 testes) e o `./mvnw verify` gera o zip do repositório p2.
+
+**Ambiente: o DBeaver desta máquina é o 26.2.2, não o 26.0.2.** `.eclipseproduct` diz `version=26.2.2` (build `202610041844`), com `org.eclipse.debug.core_3.24.0.v20260714` e plataforma do Eclipse 2026-09 (`ui.workbench_3.140.0`). A spec e o ADR 0004 fixam o 26.0.2 e o target fixa o `org.eclipse.debug.ui` 3.20.0 do Eclipse 4.39, que é o par do `debug.core` 3.23.200. O build resolve, mas ninguém conferiu o `debug.ui` 3.20 rodando sobre o `debug.core` 3.24. **Decisão do humano:** voltar ao 26.0.2 ou revalidar o par (e talvez trocar o `debug.ui` pelo do Eclipse 2026-09). O código desta issue foi compilado contra o 26.2.2; não conferi a API do DBeaver no 26.0.2.
+
+**Onde ficou**
+- Interpretador: `StatementHook` (chamado antes de cada statement, na thread da execução; o que ele lança passa por cima dos `WHEN`) e o construtor do `Interpreter` que o recebe. `DebugSession` ganhou `Isolation` (`READ_COMMITTED`, `SNAPSHOT`, aplicado antes da primeira transação), o construtor completo `(conexão, isolamento, commit, CallPolicy, StatementHook)` e `abort()`: thread-safe, a execução para antes do próximo statement com `SessionAbortedException`, rollback mesmo com "commit ao terminar", e os Packages temporários são removidos. Um statement que já está no servidor termina antes.
+- `dev.fbdebug.dbeaver.debug`: `PsqlDebugTarget` (roda a sessão numa thread própria; `terminate()` chama `abort()`), `PsqlThread`, `PsqlStackFrame` (frame do Interpretador; linha do `RoutineSourceLoader`, que segue o editor, issue 09), `PsqlVariable`/`PsqlValue` (só leitura; edição na issue 15). `SessionConsole`: console "Firebird PSQL Debug" com as entradas, as saídas e se houve commit ou rollback (também erro e Terminate). `PsqlLaunchDelegate`: o tipo de launch `dev.fbdebug.dbeaver.launchType` (`public="false"`) só dá nome à sessão na view Debug; um "Relaunch" é recusado com mensagem.
+- `dev.fbdebug.dbeaver.launch`: comando "Depurar Rotina" (`dev.fbdebug.dbeaver.debugRoutine`) no menu de contexto do navegador e do editor (`popup:org.eclipse.ui.popup.any`, visível só quando habilitado) e no menu "PSQL Debug". `RoutineLauncher`: recusa com o editor do objeto sujo ("Salve (compile) ou descarte as alterações antes de depurar"), abre a conexão dedicada com `DBSInstance.openIsolatedContext` (contexto isolado do DBeaver, fora de qualquer editor SQL; `JDBCExecutionContext.getConnection` dá o `java.sql.Connection`), carrega a Fonte do banco, passa pelo Pré-check (lista com linha/coluna), mostra o `RoutineLaunchDialog` e inicia a sessão na perspectiva Debug. O diálogo tem, por parâmetro de entrada, Valor/NULL/Padrão (padrão só nos últimos, como no `EXECUTE PROCEDURE`) e lembra os valores por conexão e Rotina; isolamento (`READ COMMITTED` padrão) e "Commit ao terminar" (desmarcado, não é lembrado).
+- O protótipo da issue 01 perdeu o launch e o debug target de mentira; ficaram só os breakpoints sem efeito (Ctrl+Shift+B), para a issue 14 substituir.
+
+**Decisões**
+- O plugin do Firebird do DBeaver **não exporta nenhum pacote**. O código usa `GenericProcedure` (de `ext.generic`) e reconhece a conexão Firebird pelo provedor do driver (`jaybird`). No `plugin.xml`, a expressão compara o nome `FireBirdProcedure` com `instanceof`, que não precisa da classe.
+- Só procedure executável fora de package é aceita. Selecionável, function e package recebem mensagem (issue 18).
+- As saídas vão para um console, não para um diálogo: não bloqueia, fica o histórico das sessões, e a issue 18 pode escrever ali as linhas do `SUSPEND`.
+- O `Launch` é criado à mão, com uma configuração não salva, para levar a Rotina e a conexão já abertas ao alvo. O delegate não é usado.
+- A `DebugSession` é aberta na thread da execução (a varredura dos packages já fala com o banco). Um Terminate antes disso também vale.
+
+**Para conferir à mão no DBeaver** (com o zip instalado por "Install New Software > Add > Archive")
+1. Botão direito numa procedure executável Firebird no navegador: "Depurar Rotina" aparece (e não aparece em tabela, nem em procedure de outro banco). O mesmo no editor do objeto e no menu "PSQL Debug".
+2. Diálogo, perspectiva Debug, saídas no console "Firebird PSQL Debug". Sem o checkbox, nada persiste; com ele, persiste.
+3. Terminate (view Debug) no meio de um `WHILE` longo: console mostra "Interrompida pelo Terminate: rollback feito.", nada persiste e `RDB$PACKAGES` sem `DBG$`.
+4. Editor do objeto com alteração não salva: mensagem e nada é aberto. Procedure com `WHERE CURRENT OF`: lista do Pré-check com linha/coluna.
+5. Com um editor SQL do DBeaver com transação aberta (modo manual) na mesma conexão: a sessão não a afeta, nem é afetada por ela.
+6. `.metadata/.log` sem erro novo (em especial de avaliação do `enabledWhen` do comando).
+
+**Não tratado**
+- Terminate durante um statement longo no servidor (um `SELECT` pesado) só vale quando ele termina; não há cancelamento do statement.
+- Valor inválido para o tipo (texto num `INTEGER`) só aparece como erro no console, depois do launch, e não no diálogo.
+- Os stack frames e as variáveis só existem com a execução pausada, o que entra com os breakpoints (issue 14). `PsqlThread.suspended()` é o ponto de entrada.
+
+### 2026-10-17 — teste à mão (humano)
+
+O humano rodou o roteiro "Para conferir à mão" no DBeaver 26.2.2 desta máquina e informou que tudo passou ("aparentemente tudo ok"). Critérios de aceite marcados com base nisso. Fica valendo que o `debug.ui` 3.20 do target rodou sobre o `debug.core` 3.24 do 26.2.2 nesse roteiro; a escolha entre voltar ao 26.0.2 e refixar as versões continua aberta.

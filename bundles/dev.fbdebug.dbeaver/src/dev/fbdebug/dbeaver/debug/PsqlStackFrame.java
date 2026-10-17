@@ -1,23 +1,31 @@
-package dev.fbdebug.dbeaver.prototype;
+package dev.fbdebug.dbeaver.debug;
 
-import org.eclipse.debug.core.DebugException;
 import org.eclipse.debug.core.model.IRegisterGroup;
 import org.eclipse.debug.core.model.IStackFrame;
 import org.eclipse.debug.core.model.IThread;
 import org.eclipse.debug.core.model.IVariable;
 
-final class PrototypeStackFrame extends PrototypeDebugElement implements IStackFrame {
+import dev.fbdebug.dbeaver.interp.Frame;
 
-    private final PrototypeThread thread;
+/**
+ * Frame do Interpretador numa pausa: a Rotina, a linha do statement em execução e as variáveis dela. A linha é a do
+ * texto da Fonte do banco montado pelo {@code RoutineSourceLoader}, que segue o do editor do DBeaver (issue 09).
+ */
+final class PsqlStackFrame extends PsqlDebugElement implements IStackFrame {
+
+    private final PsqlThread thread;
+    private final Frame frame;
+    private final int line;
     private final IVariable[] variables;
 
-    PrototypeStackFrame(PrototypeThread thread) {
+    PsqlStackFrame(PsqlThread thread, Frame frame) {
         super(thread.getDebugTarget());
         this.thread = thread;
-        this.variables = new IVariable[] {
-            new PrototypeVariable(thread.getDebugTarget(), "V_CONTADOR", "INTEGER", "1", true),
-            new PrototypeVariable(thread.getDebugTarget(), "V_NOME", "VARCHAR(50)", "'PROTOTIPO'", false),
-        };
+        this.frame = frame;
+        this.line = frame.position().line();
+        this.variables = frame.variables().stream()
+                .map(variable -> new PsqlVariable(thread.getDebugTarget(), variable))
+                .toArray(IVariable[]::new);
     }
 
     @Override
@@ -32,12 +40,12 @@ final class PrototypeStackFrame extends PrototypeDebugElement implements IStackF
 
     @Override
     public boolean hasVariables() {
-        return true;
+        return variables.length > 0;
     }
 
     @Override
     public int getLineNumber() {
-        return 1;
+        return line;
     }
 
     @Override
@@ -52,7 +60,7 @@ final class PrototypeStackFrame extends PrototypeDebugElement implements IStackF
 
     @Override
     public String getName() {
-        return "PROTOTIPO linha 1";
+        return frame.routine().displayName() + " linha " + line;
     }
 
     @Override
@@ -87,14 +95,17 @@ final class PrototypeStackFrame extends PrototypeDebugElement implements IStackF
 
     @Override
     public void stepInto() {
+        thread.stepInto();
     }
 
     @Override
     public void stepOver() {
+        thread.stepOver();
     }
 
     @Override
     public void stepReturn() {
+        thread.stepReturn();
     }
 
     @Override
@@ -113,12 +124,13 @@ final class PrototypeStackFrame extends PrototypeDebugElement implements IStackF
     }
 
     @Override
-    public void resume() throws DebugException {
+    public void resume() {
         thread.resume();
     }
 
     @Override
     public void suspend() {
+        thread.suspend();
     }
 
     @Override

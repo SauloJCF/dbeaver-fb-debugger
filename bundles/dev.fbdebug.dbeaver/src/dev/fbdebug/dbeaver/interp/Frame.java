@@ -15,10 +15,13 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 import dev.fbdebug.dbeaver.psql.Identifiers;
+import dev.fbdebug.dbeaver.psql.SubroutineScopes;
 import dev.fbdebug.dbeaver.psql.ast.Expression;
 import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
+import dev.fbdebug.dbeaver.psql.ast.Subroutine;
+import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 
 /**
  * Estado de uma Rotina em execução: a Rotina e o statement em execução, variáveis visíveis (parâmetros de entrada,
@@ -31,6 +34,11 @@ public final class Frame {
     private final boolean steppedInto;
     /** Rotinas da package da Rotina, que uma chamada sem package dentro dela alcança. */
     private final Set<String> packageRoutines;
+    /** Execução da Rotina que declara a sub-rotina deste frame; {@code null} fora de sub-rotina. */
+    private final Frame parent;
+    /** Variáveis de {@link #parent} que a sub-rotina enxerga. */
+    private final Set<String> parentVariables;
+    private final TemporaryPackages packages;
     private SourcePosition position;
 
     private final Map<String, Variable> variables = new LinkedHashMap<>();
@@ -55,19 +63,50 @@ public final class Frame {
      * @param rows destino das linhas do {@code SUSPEND}, ou {@code null} se a Rotina roda como executável
      * @param steppedInto ver {@link #steppedInto()}
      * @param packageRoutines nomes das rotinas da package da Rotina; vazio fora de package
+     * @param parent ver {@link #parent()}
+     * @param parentVariables nomes das variáveis de {@code parent} que a sub-rotina enxerga (ver
+     *            {@code SubroutineScopes})
+     * @param packages onde ficam as cópias das sub-rotinas chamadas no servidor
      */
     Frame(RoutineDefinition routine, boolean steppedInto, SavepointStack savepoints, Consumer<List<Object>> rows,
-            Set<String> packageRoutines) {
+            Set<String> packageRoutines, Frame parent, Set<String> parentVariables, TemporaryPackages packages) {
         this.routine = routine;
         this.steppedInto = steppedInto;
         this.savepoints = savepoints;
         this.rows = rows;
         this.packageRoutines = Set.copyOf(packageRoutines);
+        this.parent = parent;
+        this.parentVariables = Set.copyOf(parentVariables);
+        this.packages = packages;
         this.position = routine.body().position();
     }
 
+    /** A Rotina; numa sub-rotina, só ela, sem package (ver {@link #parent()}). */
     public RoutineDefinition routine() {
         return routine;
+    }
+
+    /**
+     * Numa sub-rotina, a execução da Rotina que a declara, cujas variáveis ela lê e altera (ver
+     * {@code SubroutineScopes}); {@code null} nos outros frames.
+     */
+    public Frame parent() {
+        return parent;
+    }
+
+    /** Frame da Rotina que declara as sub-rotinas que uma chamada sem package daqui alcança. */
+    Frame subroutineOwner() {
+        return parent != null ? parent : this;
+    }
+
+    /**
+     * Sub-rotina alcançada daqui por uma chamada sem package: dentro da Rotina, as dela; dentro de uma sub-rotina, as
+     * irmãs. A sub-rotina vem antes de qualquer outra Rotina com o mesmo nome, como no motor.
+     *
+     * @return {@code null} se não há sub-rotina com o tipo e o nome
+     */
+    Subroutine subroutine(RoutineDefinition.Kind kind, String name) {
+        return subroutineOwner().routine.subroutine(kind, name);
     }
 
     /**
@@ -90,20 +129,49 @@ public final class Frame {
     }
 
     /**
-     * Nome da Rotina chamada para o servidor. Dentro do corpo de uma package, uma rotina dela chamada sem package
-     * ganha o nome da package, como o motor a resolve; fora dela, o nome sem package seria outra Rotina.
+     * Nome da procedure chamada para o servidor. Uma sub-rotina vai para a cópia dela no Package temporário de debug.
+     * Dentro do corpo de uma package, uma rotina dela chamada sem package ganha o nome da package, como o motor a
+     * resolve; fora dela, o nome sem package seria outra Rotina.
      */
-    String serverName(String packageName, String name) {
+    String serverName(String packageName, String name) throws SQLException {
+        Subroutine subroutine = packageName == null ? subroutine(RoutineDefinition.Kind.PROCEDURE, name) : null;
+        if (subroutine != null) {
+            return Identifiers.quote(temporaryPackage(subroutine)) + "." + Identifiers.quote(name);
+        }
         String pkg = packageName != null ? packageName : packageRoutines.contains(name) ? routine.packageName() : null;
         return (pkg == null ? "" : Identifiers.quote(pkg) + ".") + Identifiers.quote(name);
     }
 
-    /** Texto de um candidato a chamada numa expressão enviada ao servidor (ver {@link #serverName}). */
-    String serverText(Expression.Call call) {
+    /**
+     * Texto de um candidato a chamada numa expressão enviada ao servidor (ver {@link #serverName}). Com
+     * {@code (}, pode ser function ou, depois de {@code FROM}, procedure; sem, só procedure.
+     */
+    String serverText(Expression.Call call) throws SQLException {
+        if (call.packageName() == null) {
+            Subroutine subroutine = call.arguments() ? subroutine(RoutineDefinition.Kind.FUNCTION, call.name())
+                    : null;
+            if (subroutine == null) {
+                subroutine = subroutine(RoutineDefinition.Kind.PROCEDURE, call.name());
+            }
+            if (subroutine != null) {
+                return Identifiers.quote(temporaryPackage(subroutine)) + "." + call.sql();
+            }
+        }
         if (call.packageName() == null && call.arguments() && packageRoutines.contains(call.name())) {
             return Identifiers.quote(routine.packageName()) + "." + call.sql();
         }
         return call.sql();
+    }
+
+    /** Package temporário com a cópia da sub-rotina. */
+    private String temporaryPackage(Subroutine subroutine) throws SQLException {
+        RoutineDefinition owner = subroutineOwner().routine;
+        if (SubroutineScopes.usingParentVariables(owner).contains(subroutine)) {
+            // O Pré-check recusa a chamada antes do launch; aqui é a garantia de nunca executá-la no servidor.
+            throw new PsqlExecutionException(subroutine.position() + ": "
+                    + UnsupportedConstruct.SUBROUTINE_USING_PARENT_VARIABLES.syntax() + " não é suportado pelo debugger");
+        }
+        return packages.packageFor(owner);
     }
 
     /** Tipo de retorno da function; {@code null} nos outros tipos de Rotina. */
@@ -155,15 +223,24 @@ public final class Frame {
         return variable;
     }
 
-    /** @param name nome normalizado (ver {@code Identifiers.normalize}) */
+    /**
+     * Variável visível no frame: da Rotina ou, numa sub-rotina, da Rotina que a declara.
+     *
+     * @param name nome normalizado (ver {@code Identifiers.normalize})
+     */
     public Optional<Variable> find(String name) {
-        return Optional.ofNullable(variables.get(name));
+        Variable variable = variables.get(name);
+        if (variable == null && parent != null && parentVariables.contains(name)) {
+            return parent.find(name);
+        }
+        return Optional.ofNullable(variable);
     }
 
     Variable get(String name) {
         return find(name).orElseThrow(() -> new PsqlExecutionException("Variável não declarada: " + name));
     }
 
+    /** Variáveis da Rotina do frame; numa sub-rotina, sem as da Rotina que a declara. */
     public Collection<Variable> variables() {
         return Collections.unmodifiableCollection(variables.values());
     }
@@ -224,15 +301,25 @@ public final class Frame {
         }
     }
 
-    /** Valor novo para a variável, que nenhum cursor aberto pode estar usando (ver {@link Cursor#checkUnchanged}). */
+    /**
+     * Valor novo para a variável, que nenhum cursor aberto pode estar usando (ver {@link Cursor#checkUnchanged}):
+     * nem os do frame, nem, se ela é da Rotina que declara a sub-rotina, os dessa Rotina.
+     */
     void assign(Variable variable, Object value) {
+        checkCursors(variable);
+        if (parent != null && variables.get(variable.name()) != variable) {
+            parent.checkCursors(variable);
+        }
+        variable.assign(value);
+    }
+
+    private void checkCursors(Variable variable) {
         for (Cursor cursor : cursors.values()) {
             cursor.checkUnchanged(variable);
         }
         for (Cursor cursor : loops) {
             cursor.checkUnchanged(variable);
         }
-        variable.assign(value);
     }
 
     /** @param name nome normalizado */

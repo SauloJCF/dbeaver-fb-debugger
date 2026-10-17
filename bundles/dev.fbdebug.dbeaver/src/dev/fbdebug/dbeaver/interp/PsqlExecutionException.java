@@ -8,4 +8,8 @@ public final class PsqlExecutionException extends RuntimeException {
     PsqlExecutionException(String message) {
         super(message);
     }
+
+    PsqlExecutionException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

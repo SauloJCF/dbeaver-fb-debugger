@@ -33,7 +33,7 @@ Modo de execução em que toda expressão passa por Avaliação de expressão no
 Modo futuro em que atribuições simples e condições booleanas são avaliadas no cliente. Fora do MVP.
 
 **Package temporário de debug**
-Package `DBG$...` criado no banco durante a Sessão de debug para hospedar as sub-rotinas internas (`DECLARE PROCEDURE/FUNCTION`) da Rotina, para que expressões que as chamam possam ser avaliadas no servidor. Removido ao fim da sessão; restos são varridos ao abrir a próxima.
+Package `DBG$...` criado no banco durante a Sessão de debug para hospedar as sub-rotinas internas (`DECLARE PROCEDURE/FUNCTION`) da Rotina, para que expressões que as chamam possam ser avaliadas no servidor. Removido ao fim da sessão; restos são varridos ao abrir a próxima. Sub-rotina que usa variáveis da Rotina não entra no package (ADR 0003).
 
 **Step into elegível**
 Chamada em que o step into entra na Rotina chamada: `EXECUTE PROCEDURE`, `FOR SELECT … FROM sp(...)` com a procedure como única fonte, e `x = F(...)` com a chamada como expressão inteira.

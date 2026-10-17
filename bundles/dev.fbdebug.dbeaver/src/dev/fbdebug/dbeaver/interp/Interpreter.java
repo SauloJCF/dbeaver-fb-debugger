@@ -14,6 +14,7 @@ import java.util.function.Consumer;
 import dev.fbdebug.dbeaver.psql.CallSites;
 import dev.fbdebug.dbeaver.psql.PreCheck;
 import dev.fbdebug.dbeaver.psql.PsqlSyntaxException;
+import dev.fbdebug.dbeaver.psql.SubroutineScopes;
 import dev.fbdebug.dbeaver.psql.ast.Assignment;
 import dev.fbdebug.dbeaver.psql.ast.Block;
 import dev.fbdebug.dbeaver.psql.ast.CloseCursor;
@@ -40,6 +41,7 @@ import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Subroutine;
 import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
@@ -61,25 +63,39 @@ public final class Interpreter {
     private final ExceptionRaiser exceptions;
     private final RoutineCatalog catalog;
     private final CallPolicy policy;
+    private final TemporaryPackages packages;
+    private final StatementHook hook;
     /** Frames das Rotinas em execução; o primeiro é o de cima. */
     private final Deque<Frame> frames = new ArrayDeque<>();
 
-    /** Interpretador que executa no servidor toda chamada de Rotina. */
+    /**
+     * Interpretador que executa no servidor toda chamada de Rotina. Os Packages temporários de debug que ele criar não
+     * são removidos; para isso, ver o outro construtor.
+     */
     public Interpreter(Connection connection) {
-        this(connection, new DatabaseRoutineCatalog(connection), CallPolicy.SERVER);
+        this(connection, new DatabaseRoutineCatalog(connection), CallPolicy.SERVER, new TemporaryPackages(connection));
     }
 
     /**
      * @param catalog de onde vêm as Rotinas chamadas interpretadas e as rotinas de package que uma chamada sem
      *            package alcança
+     * @param packages onde ficam as cópias das sub-rotinas chamadas no servidor; quem cria o Interpretador os remove
      */
-    public Interpreter(Connection connection, RoutineCatalog catalog, CallPolicy policy) {
+    public Interpreter(Connection connection, RoutineCatalog catalog, CallPolicy policy, TemporaryPackages packages) {
+        this(connection, catalog, policy, packages, StatementHook.NONE);
+    }
+
+    /** @param hook chamado antes de cada statement (ver {@link StatementHook}) */
+    public Interpreter(Connection connection, RoutineCatalog catalog, CallPolicy policy, TemporaryPackages packages,
+            StatementHook hook) {
         this.connection = connection;
         this.evaluator = new ExpressionEvaluator(connection);
         this.dml = new DmlExecutor(connection, evaluator);
         this.exceptions = new ExceptionRaiser(connection, evaluator);
         this.catalog = catalog;
         this.policy = policy;
+        this.packages = packages;
+        this.hook = hook;
     }
 
     /**
@@ -102,7 +118,7 @@ public final class Interpreter {
      * @return as saídas; numa function, uma só, com o nome da function e o valor do {@code RETURN}
      */
     public ProcedureResult execute(RoutineDefinition routine, List<?> inputs) throws SQLException {
-        return call(routine, true, new SavepointStack(connection), values(inputs), null);
+        return call(Callee.root(routine), new SavepointStack(connection), values(inputs), null);
     }
 
     /**
@@ -115,7 +131,7 @@ public final class Interpreter {
      */
     public void select(RoutineDefinition routine, List<?> inputs, Consumer<List<Object>> rows)
             throws SQLException {
-        call(routine, true, new SavepointStack(connection), values(inputs), Objects.requireNonNull(rows));
+        call(Callee.root(routine), new SavepointStack(connection), values(inputs), Objects.requireNonNull(rows));
     }
 
     /**
@@ -162,15 +178,16 @@ public final class Interpreter {
     }
 
     /**
-     * @param steppedInto ver {@link Frame#steppedInto()}
      * @param savepoints pilha da chamada, que diz depois a quem chamou se a Rotina passou alterações para ele
      * @param rows destino das linhas do {@code SUSPEND}, ou {@code null} para rodar como executável
      */
-    private ProcedureResult call(RoutineDefinition routine, boolean steppedInto, SavepointStack savepoints,
-            Arguments arguments, Consumer<List<Object>> rows) throws SQLException {
+    private ProcedureResult call(Callee callee, SavepointStack savepoints, Arguments arguments,
+            Consumer<List<Object>> rows) throws SQLException {
+        RoutineDefinition routine = callee.routine();
         Set<String> packageRoutines =
                 routine.packageName() == null ? Set.of() : catalog.packageRoutines(routine.packageName());
-        Frame frame = new Frame(routine, steppedInto, savepoints, rows, packageRoutines);
+        Frame frame = new Frame(routine, callee.steppedInto(), savepoints, rows, packageRoutines, callee.parent(),
+                callee.parentVariables(), packages);
         savepoints.beginCall();
         frames.push(frame);
         ProcedureResult result;
@@ -267,6 +284,7 @@ public final class Interpreter {
     /** @return o desvio que interrompeu o statement, ou {@code null} se ele terminou normalmente */
     private Jump execute(Statement statement, Frame frame) throws SQLException {
         frame.position(statement.position());
+        hook.beforeStatement(frame, statement);
         switch (statement) {
             case Block block -> {
                 return executeBlock(block, frame);
@@ -502,7 +520,7 @@ public final class Interpreter {
             frame.enterLoop(cursor);
             try {
                 frame.savepoints().beforeChange();
-                call(procedure, callee.steppedInto(), savepoints, arguments(source.arguments(), frame), row -> {
+                call(callee, savepoints, arguments(source.arguments(), frame), row -> {
                     if (savepoints.takeChanges()) {
                         frame.savepoints().changed();
                     }
@@ -660,8 +678,7 @@ public final class Interpreter {
     private ProcedureResult callInterpreted(Callee callee, List<Expression> arguments, Frame caller)
             throws SQLException {
         SavepointStack savepoints = new SavepointStack(connection);
-        ProcedureResult result =
-                call(callee.routine(), callee.steppedInto(), savepoints, arguments(arguments, caller), null);
+        ProcedureResult result = call(callee, savepoints, arguments(arguments, caller), null);
         if (savepoints.takeChanges()) {
             caller.savepoints().changed();
         }
@@ -669,11 +686,17 @@ public final class Interpreter {
     }
 
     /**
-     * Rotina chamada a interpretar.
+     * Rotina a interpretar.
      *
      * @param steppedInto a política escolheu o step into (ver {@link Frame#steppedInto()})
+     * @param parent numa sub-rotina, o frame da Rotina que a declara (ver {@link Frame#parent()}); senão {@code null}
+     * @param parentVariables variáveis de {@code parent} que a sub-rotina enxerga
      */
-    private record Callee(RoutineDefinition routine, boolean steppedInto) {
+    private record Callee(RoutineDefinition routine, boolean steppedInto, Frame parent, Set<String> parentVariables) {
+
+        static Callee root(RoutineDefinition routine) {
+            return new Callee(routine, true, null, Set.of());
+        }
     }
 
     /**
@@ -681,10 +704,15 @@ public final class Interpreter {
      * servidor (exceto no {@code FOR SELECT} e numa rotina privada da package de quem chama, ver
      * {@link CallPolicy}), quando o nome não é de Rotina PSQL com Fonte do banco, ou quando a Fonte dela tem
      * construção que o Interpretador não executa (nesse caso a Rotina roda inteira no servidor, que é o gabarito).
+     * Um nome sem package é primeiro o de uma sub-rotina ({@link #subroutineCallee}).
      */
     private Callee callee(CallSites.Form form, RoutineDefinition.Kind kind, String packageName, String name,
             SourcePosition position, Frame caller) throws SQLException {
         boolean steppedInto = policy.stepInto(new CallSites.CallSite(form, packageName, name, position), caller);
+        Subroutine subroutine = packageName == null ? caller.subroutine(kind, name) : null;
+        if (subroutine != null) {
+            return subroutineCallee(subroutine, form, steppedInto, caller);
+        }
         if (!steppedInto && form != CallSites.Form.FOR_SELECT && !isPrivate(packageName, name, caller)) {
             return null;
         }
@@ -694,7 +722,24 @@ public final class Interpreter {
         } catch (PsqlSyntaxException e) {
             return null;
         }
-        return routine == null || !PreCheck.scan(routine).isEmpty() ? null : new Callee(routine, steppedInto);
+        return routine == null || !PreCheck.scan(routine).isEmpty() ? null
+                : new Callee(routine, steppedInto, null, Set.of());
+    }
+
+    /**
+     * Sub-rotina chamada. No step over, ela vai ao servidor pela cópia no Package temporário de debug, exceto no
+     * {@code FOR SELECT} (ver {@link CallPolicy}) e quando ela usa variáveis da Rotina que a declara, que a cópia não
+     * tem: aí é interpretada sem que a camada de debug pare nela. O Pré-check da Rotina já passou pelo corpo dela.
+     */
+    private static Callee subroutineCallee(Subroutine subroutine, CallSites.Form form, boolean steppedInto,
+            Frame caller) {
+        Frame owner = caller.subroutineOwner();
+        boolean onServer = !SubroutineScopes.usingParentVariables(owner.routine()).contains(subroutine);
+        if (!steppedInto && form != CallSites.Form.FOR_SELECT && onServer) {
+            return null;
+        }
+        return new Callee(subroutine.routine(), steppedInto, owner,
+                SubroutineScopes.parentVariables(owner.routine(), subroutine));
     }
 
     /** Rotina privada da package de quem chama: no servidor, fora da package, ela não existe. */

@@ -30,6 +30,7 @@ import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Subroutine;
 import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
@@ -72,7 +73,10 @@ public final class PreCheck {
         return scan(procedure);
     }
 
-    /** @return construções recusadas do AST, em ordem de posição */
+    /**
+     * @return construções recusadas do AST, em ordem de posição, inclusive as dos corpos das sub-rotinas: a
+     *         sub-rotina é parte da Fonte depurada e o step into entra nela
+     */
     public static List<Finding> scan(RoutineDefinition procedure) {
         List<Finding> findings = new ArrayList<>();
         add(procedure.unsupported(), findings);
@@ -80,9 +84,30 @@ public final class PreCheck {
             add(cursor.select().unsupported(), findings);
         }
         scan(procedure.body(), findings);
+        for (Subroutine subroutine : procedure.subroutines()) {
+            findings.addAll(scan(subroutine.routine()));
+        }
+        add(subroutinesUsingParentVariables(procedure), findings);
         findings.sort(Comparator.comparing(Finding::position,
                 Comparator.comparingInt(SourcePosition::line).thenComparingInt(SourcePosition::column)));
         return findings;
+    }
+
+    /**
+     * Chamadas Executadas no servidor (em expressão ou Fatia DML) a sub-rotinas que usam variáveis da Rotina
+     * ({@link UnsupportedConstruct#SUBROUTINE_USING_PARENT_VARIABLES}), na posição de cada chamada.
+     */
+    private static List<UnsupportedUse> subroutinesUsingParentVariables(RoutineDefinition procedure) {
+        Set<String> names = new HashSet<>();
+        SubroutineScopes.usingParentVariables(procedure).forEach(subroutine -> names.add(subroutine.routine().name()));
+        List<UnsupportedUse> uses = new ArrayList<>();
+        for (CallSites.CallSite site : CallSites.of(procedure)) {
+            if (!site.stepIntoEligible() && site.packageName() == null && names.contains(site.name())) {
+                uses.add(new UnsupportedUse(UnsupportedConstruct.SUBROUTINE_USING_PARENT_VARIABLES,
+                        site.position()));
+            }
+        }
+        return uses;
     }
 
     private static void scan(Statement statement, List<Finding> findings) {

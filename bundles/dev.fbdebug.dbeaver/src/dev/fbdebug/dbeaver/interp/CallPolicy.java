@@ -11,7 +11,9 @@ import dev.fbdebug.dbeaver.psql.CallSites;
  * busca linhas à frente do laço, rodando a procedure além do ponto em que o laço sai (com o DML dela), e num erro
  * no meio do lote o Jaybird descarta as linhas boas que vieram junto. O motor, em PSQL, busca uma linha por vez. Só
  * uma procedure que não dá para interpretar vai ao cursor do servidor. O mesmo vale para uma rotina privada da
- * package de quem chama: fora da package ela não existe, e o servidor não a acharia.
+ * package de quem chama: fora da package ela não existe, e o servidor não a acharia. E para uma sub-rotina que usa
+ * variáveis da Rotina que a declara: a cópia dela no Package temporário de debug não as teria. As outras sub-rotinas
+ * vão ao servidor por essa cópia.
  */
 @FunctionalInterface
 public interface CallPolicy {

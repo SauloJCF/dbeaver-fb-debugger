@@ -12,16 +12,35 @@ import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 /**
  * Sessão de debug: uma execução de Rotina numa conexão dedicada, com uma única transação. Ao terminar ou abortar,
  * faz rollback, a menos que "commit ao terminar" tenha sido pedido. Fecha a conexão no {@link #close()}.
+ * <p>
+ * Ao abrir, varre os Packages temporários de debug que sobraram de sessões que já não existem; ao terminar ou
+ * fechar, remove os que ela criou ({@link TemporaryPackages}).
  */
 public final class DebugSession implements AutoCloseable {
 
+    /** Isolamento da transação da sessão. */
+    public enum Isolation {
+        /** {@code READ COMMITTED}, o padrão. */
+        READ_COMMITTED(Connection.TRANSACTION_READ_COMMITTED),
+        /** {@code SNAPSHOT}, que o Jaybird chama de {@code REPEATABLE READ}. */
+        SNAPSHOT(Connection.TRANSACTION_REPEATABLE_READ);
+
+        private final int level;
+
+        Isolation(int level) {
+            this.level = level;
+        }
+    }
+
     private final Connection connection;
     private final boolean commitOnFinish;
+    private final TemporaryPackages packages;
     private final Interpreter interpreter;
+    private volatile boolean abortRequested;
     private boolean finished;
 
     /**
-     * Sessão em que toda chamada de Rotina é executada no servidor.
+     * Sessão em {@code READ COMMITTED} em que toda chamada de Rotina é executada no servidor.
      *
      * @param connection conexão dedicada à sessão; passa a ser da sessão
      */
@@ -30,14 +49,51 @@ public final class DebugSession implements AutoCloseable {
     }
 
     /**
+     * Sessão em {@code READ COMMITTED}.
+     *
      * @param connection conexão dedicada à sessão; passa a ser da sessão
      * @param policy escolha entre step into e step over a cada chamada elegível
      */
     public DebugSession(Connection connection, boolean commitOnFinish, CallPolicy policy) throws SQLException {
+        this(connection, Isolation.READ_COMMITTED, commitOnFinish, policy, StatementHook.NONE);
+    }
+
+    /**
+     * @param connection conexão dedicada à sessão, ainda sem transação em andamento; passa a ser da sessão
+     * @param policy escolha entre step into e step over a cada chamada elegível
+     * @param hook chamado antes de cada statement (ver {@link StatementHook}), depois da verificação do
+     *            {@link #abort()}
+     */
+    public DebugSession(Connection connection, Isolation isolation, boolean commitOnFinish, CallPolicy policy,
+            StatementHook hook) throws SQLException {
         this.connection = connection;
         this.commitOnFinish = commitOnFinish;
+        TemporaryPackages.sweep(connection);
+        connection.setTransactionIsolation(isolation.level);
         connection.setAutoCommit(false);
-        this.interpreter = new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy);
+        this.packages = new TemporaryPackages(connection);
+        StatementHook abortable = (frame, statement) -> {
+            checkAbort();
+            hook.beforeStatement(frame, statement);
+            checkAbort();
+        };
+        this.interpreter = new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy, packages,
+                abortable);
+    }
+
+    /**
+     * Pede o fim da execução, de qualquer thread: ela para antes do próximo statement com
+     * {@link SessionAbortedException}, que nenhum {@code WHEN} trata, e a sessão faz rollback (mesmo com "commit ao
+     * terminar") e remove os Packages temporários de debug. Um statement que já está no servidor termina antes.
+     */
+    public void abort() {
+        abortRequested = true;
+    }
+
+    private void checkAbort() {
+        if (abortRequested) {
+            throw new SessionAbortedException();
+        }
     }
 
     /** Pilha de frames da execução em andamento (ver {@link Interpreter#frames()}). */
@@ -84,6 +140,7 @@ public final class DebugSession implements AutoCloseable {
             result = execution.run();
         } catch (SQLException | RuntimeException e) {
             rollbackQuietly(e);
+            dropPackagesQuietly(e);
             throw e;
         }
         if (commitOnFinish) {
@@ -91,14 +148,18 @@ public final class DebugSession implements AutoCloseable {
         } else {
             connection.rollback();
         }
+        packages.dropAll();
         return result;
     }
 
     @Override
     public void close() throws SQLException {
         try {
-            if (!connection.isClosed() && !connection.getAutoCommit()) {
-                connection.rollback();
+            if (!connection.isClosed()) {
+                if (!connection.getAutoCommit()) {
+                    connection.rollback();
+                }
+                packages.dropAll();
             }
         } finally {
             connection.close();
@@ -113,6 +174,14 @@ public final class DebugSession implements AutoCloseable {
     private void rollbackQuietly(Exception cause) {
         try {
             connection.rollback();
+        } catch (SQLException e) {
+            cause.addSuppressed(e);
+        }
+    }
+
+    private void dropPackagesQuietly(Exception cause) {
+        try {
+            packages.dropAll();
         } catch (SQLException e) {
             cause.addSuppressed(e);
         }

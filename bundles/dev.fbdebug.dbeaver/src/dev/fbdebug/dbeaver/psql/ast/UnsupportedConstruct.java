@@ -7,8 +7,7 @@ package dev.fbdebug.dbeaver.psql.ast;
  *
  * <p>
  * O que a gramática nem reconhece também é recusado pelo Pré-check, como trecho não reconhecido, com a posição
- * do erro de sintaxe. É o caso, por enquanto, das sub-rotinas ({@code DECLARE PROCEDURE}/{@code DECLARE FUNCTION}),
- * que entram na issue 11.
+ * do erro de sintaxe.
  */
 public enum UnsupportedConstruct {
 
@@ -56,7 +55,15 @@ public enum UnsupportedConstruct {
     DATABASE_TRIGGER("trigger de banco (ON CONNECT, ON DISCONNECT, ON TRANSACTION)"),
 
     /** Trigger de DDL ({@code BEFORE | AFTER ANY DDL STATEMENT}, {@code ... CREATE TABLE} etc.). */
-    DDL_TRIGGER("trigger de DDL");
+    DDL_TRIGGER("trigger de DDL"),
+
+    /**
+     * Chamada dentro de expressão ou de Fatia DML a uma sub-rotina que usa variáveis da Rotina que a declara (o
+     * Firebird 5 permite). A chamada roda no servidor, na cópia do Package temporário de debug, onde essas variáveis
+     * não existem. Nas chamadas Step into elegíveis, a sub-rotina é interpretada e funciona.
+     */
+    SUBROUTINE_USING_PARENT_VARIABLES("chamada, dentro de expressão ou DML, de sub-rotina que usa variáveis da "
+            + "Rotina que a declara");
 
     private final String syntax;
 

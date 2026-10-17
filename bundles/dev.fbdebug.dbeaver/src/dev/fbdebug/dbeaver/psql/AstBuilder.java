@@ -1,8 +1,10 @@
 package dev.fbdebug.dbeaver.psql;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -39,6 +41,7 @@ import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
+import dev.fbdebug.dbeaver.psql.ast.Subroutine;
 import dev.fbdebug.dbeaver.psql.ast.Suspend;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 import dev.fbdebug.dbeaver.psql.ast.UnsupportedUse;
@@ -103,6 +106,8 @@ final class AstBuilder {
      * {@code UPDATING}/{@code DELETING} são referências mesmo sem {@code :}.
      */
     private boolean trigger;
+    /** Montando uma sub-rotina, que não pode ter outras. */
+    private boolean inSubroutine;
 
     AstBuilder(TokenStream tokens) {
         this.tokens = tokens;
@@ -330,16 +335,123 @@ final class AstBuilder {
             PsqlParser.RoutineBodyContext body, RoutineDefinition.Trigger triggerHeader) {
         List<VariableDeclaration> variables = new ArrayList<>();
         List<CursorDeclaration> cursors = new ArrayList<>();
+        List<PsqlParser.SubroutineDeclarationContext> subroutineDeclarations = new ArrayList<>();
         for (PsqlParser.DeclarationContext declaration : body.declaration()) {
             if (declaration.cursorDeclaration() != null) {
                 cursors.add(cursor(declaration.cursorDeclaration()));
+            } else if (declaration.subroutineDeclaration() != null) {
+                subroutineDeclarations.add(declaration.subroutineDeclaration());
             } else {
                 variables.add(variable(declaration.variableDeclaration()));
             }
         }
+        List<Subroutine> subroutines = subroutines(subroutineDeclarations);
         Block block = block(body.block());
         return new RoutineDefinition(kind, packageName, name, inputs, outputs, returnValue, variables, cursors,
-                block, suspends, unsupported, triggerHeader);
+                block, suspends, unsupported, triggerHeader, subroutines);
+    }
+
+    /** Sub-rotinas implementadas; cada declaração antecipada vai junto da implementação dela. */
+    private List<Subroutine> subroutines(List<PsqlParser.SubroutineDeclarationContext> declarations) {
+        if (inSubroutine && !declarations.isEmpty()) {
+            throw new PsqlSyntaxException("o Firebird não aceita sub-rotina dentro de sub-rotina",
+                    position(declarations.get(0)));
+        }
+        Map<String, PsqlParser.SubroutineDeclarationContext> forward = new HashMap<>();
+        for (PsqlParser.SubroutineDeclarationContext declaration : declarations) {
+            if (declaration.routineBody() == null) {
+                forward.put(subroutineKey(declaration), declaration);
+            }
+        }
+        List<Subroutine> subroutines = new ArrayList<>();
+        for (PsqlParser.SubroutineDeclarationContext declaration : declarations) {
+            if (declaration.routineBody() != null) {
+                subroutines.add(subroutine(declaration, forward.get(subroutineKey(declaration))));
+            }
+        }
+        return subroutines;
+    }
+
+    private static String subroutineKey(PsqlParser.SubroutineDeclarationContext ctx) {
+        return (ctx.FUNCTION() != null ? "FUNCTION " : "PROCEDURE ") + name(ctx.identifier());
+    }
+
+    /**
+     * Sub-rotina, montada com estado próprio: as construções recusadas e o {@code SUSPEND} dela não são da Rotina que
+     * a declara, e numa trigger ela não enxerga {@code NEW}/{@code OLD} nem os eventos.
+     *
+     * @param forward declaração antecipada, que tem os valores padrão das entradas; ou {@code null}
+     */
+    private Subroutine subroutine(PsqlParser.SubroutineDeclarationContext ctx,
+            PsqlParser.SubroutineDeclarationContext forward) {
+        List<UnsupportedUse> outerUnsupported = List.copyOf(unsupported);
+        boolean outerSuspends = suspends;
+        boolean outerTrigger = trigger;
+        unsupported.clear();
+        suspends = false;
+        trigger = false;
+        inSubroutine = true;
+        RoutineDefinition routine;
+        try {
+            List<ParameterDeclaration> declared = forward == null ? null : inputs(signatureInputs(forward));
+            String name = name(ctx.identifier());
+            routine = ctx.FUNCTION() != null ? function(null, name, ctx.functionSignature(), ctx.routineBody())
+                    : procedure(null, name, ctx.procedureSignature(), ctx.routineBody());
+            if (declared != null && declared.size() == routine.inputs().size()) {
+                List<ParameterDeclaration> inputs = new ArrayList<>();
+                for (int i = 0; i < declared.size(); i++) {
+                    ParameterDeclaration input = routine.inputs().get(i);
+                    inputs.add(new ParameterDeclaration(input.name(), input.type(), input.notNull(),
+                            declared.get(i).defaultValue(), input.position()));
+                }
+                routine = routine.withInputs(inputs);
+            }
+        } finally {
+            unsupported.clear();
+            unsupported.addAll(outerUnsupported);
+            suspends = outerSuspends;
+            trigger = outerTrigger;
+            inSubroutine = false;
+        }
+        Token as = ctx.AS().getSymbol();
+        String header = signatureText(forward != null ? forward : ctx, true);
+        String implementation = signatureText(ctx, false)
+                + tokens.getText(Interval.of(as.getTokenIndex(), ctx.routineBody().getStop().getTokenIndex()));
+        return new Subroutine(routine, header, implementation, position(ctx));
+    }
+
+    private static PsqlParser.InputParametersContext signatureInputs(PsqlParser.SubroutineDeclarationContext ctx) {
+        return ctx.FUNCTION() != null ? ctx.functionSignature().inputParameters()
+                : ctx.procedureSignature().inputParameters();
+    }
+
+    /**
+     * {@code PROCEDURE|FUNCTION nome <assinatura>} de uma declaração de sub-rotina, como está na Fonte, até antes do
+     * {@code AS} ou do {@code ;}.
+     *
+     * @param defaults com os valores padrão das entradas; sem eles, o texto do {@code = valor} fica de fora
+     */
+    private String signatureText(PsqlParser.SubroutineDeclarationContext ctx, boolean defaults) {
+        int first = (ctx.FUNCTION() != null ? ctx.FUNCTION() : ctx.PROCEDURE()).getSymbol().getTokenIndex();
+        int end = (ctx.AS() != null ? ctx.AS() : ctx.SEMI()).getSymbol().getTokenIndex();
+        List<Interval> skipped = new ArrayList<>();
+        PsqlParser.InputParametersContext inputs = signatureInputs(ctx);
+        if (!defaults && inputs != null) {
+            for (PsqlParser.ParameterDeclarationContext parameter : inputs.parameterDeclaration()) {
+                if (parameter.defaultValue() != null) {
+                    skipped.add(Interval.of(parameter.defaultValue().getStart().getTokenIndex(),
+                            parameter.defaultValue().getStop().getTokenIndex()));
+                }
+            }
+        }
+        StringBuilder text = new StringBuilder();
+        for (int i = first; i < end; i++) {
+            int index = i;
+            if (skipped.stream().noneMatch(interval -> index >= interval.a && index <= interval.b)) {
+                text.append(tokens.get(i).getText());
+            }
+        }
+        return text.toString();
     }
 
     private List<ParameterDeclaration> inputs(PsqlParser.InputParametersContext ctx) {

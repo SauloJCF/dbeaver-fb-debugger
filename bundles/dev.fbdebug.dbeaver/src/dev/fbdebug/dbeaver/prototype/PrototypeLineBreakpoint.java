@@ -13,6 +13,7 @@ import org.eclipse.debug.core.model.LineBreakpoint;
 public final class PrototypeLineBreakpoint extends LineBreakpoint {
 
     static final String MARKER_TYPE = "dev.fbdebug.dbeaver.prototypeLineBreakpointMarker";
+    private static final String MODEL_ID = "dev.fbdebug.dbeaver.prototype";
 
     /** Exigido pelo debug.core para recriar breakpoints a partir de markers. */
     public PrototypeLineBreakpoint() {
@@ -32,6 +33,6 @@ public final class PrototypeLineBreakpoint extends LineBreakpoint {
 
     @Override
     public String getModelIdentifier() {
-        return PrototypeDebugElement.MODEL_ID;
+        return MODEL_ID;
     }
 }

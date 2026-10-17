@@ -2,23 +2,69 @@
 <?eclipse version="3.4"?>
 <plugin>
 
-    <!-- ===== Protótipo descartável (issue 01): prova que o org.eclipse.debug.ui funciona no DBeaver ===== -->
+    <!-- ===== Launch e modelo de debug (issue 13) ===== -->
 
+    <!-- Só dá nome à Sessão de debug na view Debug: o launch sai do comando "Depurar Rotina". -->
     <extension point="org.eclipse.debug.core.launchConfigurationTypes">
         <launchConfigurationType
-                id="dev.fbdebug.dbeaver.prototype.launchType"
-                name="Firebird PSQL (protótipo)"
-                delegate="dev.fbdebug.dbeaver.prototype.PrototypeLaunchDelegate"
+                id="dev.fbdebug.dbeaver.launchType"
+                name="Firebird PSQL"
+                delegate="dev.fbdebug.dbeaver.debug.PsqlLaunchDelegate"
                 modes="debug"
-                public="true"/>
+                public="false"/>
     </extension>
 
-    <extension point="org.eclipse.debug.ui.launchConfigurationTabGroups">
-        <launchConfigurationTabGroup
-                id="dev.fbdebug.dbeaver.prototype.tabGroup"
-                type="dev.fbdebug.dbeaver.prototype.launchType"
-                class="dev.fbdebug.dbeaver.prototype.PrototypeTabGroup"/>
+    <extension point="org.eclipse.ui.commands">
+        <command
+                id="dev.fbdebug.dbeaver.debugRoutine"
+                name="Depurar Rotina"
+                description="Inicia uma Sessão de debug da Rotina Firebird"/>
     </extension>
+
+    <extension point="org.eclipse.ui.handlers">
+        <!-- Antes de o plugin carregar, vale esta expressão; depois, o handler confere a Rotina de fato. O plugin do
+             Firebird do DBeaver não exporta FireBirdProcedure, mas a expressão compara só o nome da classe. -->
+        <handler
+                commandId="dev.fbdebug.dbeaver.debugRoutine"
+                class="dev.fbdebug.dbeaver.launch.DebugRoutineHandler">
+            <enabledWhen>
+                <or>
+                    <with variable="selection">
+                        <instanceof value="org.eclipse.jface.viewers.IStructuredSelection"/>
+                        <count value="1"/>
+                        <iterate operator="and">
+                            <adapt type="org.jkiss.dbeaver.model.struct.rdb.DBSProcedure">
+                                <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdProcedure"/>
+                            </adapt>
+                        </iterate>
+                    </with>
+                    <with variable="activeEditorInput">
+                        <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                    </with>
+                </or>
+            </enabledWhen>
+        </handler>
+        <!-- O debug.ui só liga Ctrl+Shift+B a um handler via breakpointActionSet, que o DBeaver não exibe. -->
+        <handler
+                commandId="org.eclipse.debug.ui.commands.ToggleBreakpoint"
+                class="dev.fbdebug.dbeaver.prototype.PrototypeToggleBreakpointHandler"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.menus">
+        <menuContribution locationURI="menu:org.eclipse.ui.main.menu?after=additions">
+            <menu id="dev.fbdebug.dbeaver.menu" label="PSQL Debug">
+                <command commandId="dev.fbdebug.dbeaver.debugRoutine"/>
+            </menu>
+        </menuContribution>
+        <!-- Menu de contexto do navegador e do editor de objeto: só aparece com a Rotina Firebird. -->
+        <menuContribution allPopups="false" locationURI="popup:org.eclipse.ui.popup.any?after=generate">
+            <command commandId="dev.fbdebug.dbeaver.debugRoutine">
+                <visibleWhen checkEnabled="true"/>
+            </command>
+        </menuContribution>
+    </extension>
+
+    <!-- ===== Breakpoints do protótipo da issue 01, sem efeito real; a issue 14 os substitui ===== -->
 
     <extension point="org.eclipse.core.resources.markers"
                id="prototypeLineBreakpointMarker"
@@ -39,30 +85,6 @@
         <toggleTargetFactory
                 id="dev.fbdebug.dbeaver.prototype.toggleTargetFactory"
                 class="dev.fbdebug.dbeaver.prototype.PrototypeToggleTargetFactory"/>
-    </extension>
-
-    <extension point="org.eclipse.ui.commands">
-        <command
-                id="dev.fbdebug.dbeaver.prototype.launch"
-                name="Depurar protótipo Firebird PSQL"/>
-    </extension>
-
-    <extension point="org.eclipse.ui.handlers">
-        <handler
-                commandId="dev.fbdebug.dbeaver.prototype.launch"
-                class="dev.fbdebug.dbeaver.prototype.PrototypeLaunchHandler"/>
-        <!-- O debug.ui só liga Ctrl+Shift+B a um handler via breakpointActionSet, que o DBeaver não exibe. -->
-        <handler
-                commandId="org.eclipse.debug.ui.commands.ToggleBreakpoint"
-                class="dev.fbdebug.dbeaver.prototype.PrototypeToggleBreakpointHandler"/>
-    </extension>
-
-    <extension point="org.eclipse.ui.menus">
-        <menuContribution locationURI="menu:org.eclipse.ui.main.menu?after=additions">
-            <menu id="dev.fbdebug.dbeaver.menu" label="PSQL Debug">
-                <command commandId="dev.fbdebug.dbeaver.prototype.launch"/>
-            </menu>
-        </menuContribution>
     </extension>
 
 </plugin>

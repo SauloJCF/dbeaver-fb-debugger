@@ -18,6 +18,7 @@ import dev.fbdebug.dbeaver.interp.CallPolicy;
 import dev.fbdebug.dbeaver.interp.DatabaseRoutineCatalog;
 import dev.fbdebug.dbeaver.interp.Interpreter;
 import dev.fbdebug.dbeaver.interp.ProcedureResult;
+import dev.fbdebug.dbeaver.interp.TemporaryPackages;
 import dev.fbdebug.dbeaver.psql.Identifiers;
 import dev.fbdebug.dbeaver.psql.PreCheck;
 import dev.fbdebug.dbeaver.psql.RoutineParser;
@@ -142,6 +143,7 @@ public final class DifferentialHarness {
         Outcome actual;
         try (Connection connection = database.connect()) {
             connection.setAutoCommit(false);
+            TemporaryPackages packages = new TemporaryPackages(connection);
             try {
                 RoutineSourceLoader.TriggerSource source = RoutineSourceLoader.loadTrigger(connection, trigger);
                 RoutineDefinition definition = RoutineParser.parseTrigger(source.text(), source.columns());
@@ -164,7 +166,7 @@ public final class DifferentialHarness {
                 SQLException error = null;
                 try {
                     ProcedureResult result = new Interpreter(connection, new DatabaseRoutineCatalog(connection),
-                            policy).execute(definition, values);
+                            policy, packages).execute(definition, values);
                     result.names().forEach(name -> names.add(name.substring("NEW.".length())));
                     rows.add(result.values());
                 } catch (SQLException e) {
@@ -173,6 +175,7 @@ public final class DifferentialHarness {
                 actual = new Outcome(names, rows, error, snapshot(connection));
             } finally {
                 connection.rollback();
+                packages.dropAll();
             }
         }
         OutputComparison.assertSameError(call, expected.error(), actual.error());
@@ -261,9 +264,11 @@ public final class DifferentialHarness {
         }
     }
 
+    /** Os Packages temporários de debug que o Interpretador criar são removidos depois do rollback. */
     private Outcome runInterpreted(Target target, List<Object> inputs, boolean select) throws SQLException {
         try (Connection connection = database.connect()) {
             connection.setAutoCommit(false);
+            TemporaryPackages packages = new TemporaryPackages(connection);
             try {
                 RoutineDefinition definition = target.load(connection);
                 List<PreCheck.Finding> findings = PreCheck.scan(definition);
@@ -274,7 +279,7 @@ public final class DifferentialHarness {
                 List<List<Object>> rows = new ArrayList<>();
                 try {
                     Interpreter interpreter =
-                            new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy);
+                            new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy, packages);
                     if (select) {
                         interpreter.select(definition, inputs, rows::add);
                     } else {
@@ -288,6 +293,7 @@ public final class DifferentialHarness {
                 return new Outcome(names, rows, null, snapshot(connection));
             } finally {
                 connection.rollback();
+                packages.dropAll();
             }
         }
     }

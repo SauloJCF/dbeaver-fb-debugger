@@ -389,7 +389,7 @@ class CallDifferentialTest {
                 caller.find("N").ifPresent(n -> stack.append(" N=").append(n.value()));
                 stacks.add(stack.toString());
                 return true;
-            });
+            }, new TemporaryPackages(connection));
             RoutineDefinition root = RoutineParser.parse(RoutineSourceLoader.loadProcedure(connection, "CH_A"));
             interpreter[0].execute(root, List.of(2, 99));
             connection.rollback();
