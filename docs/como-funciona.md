@@ -55,16 +55,19 @@ Você coloca um breakpoint na linha 4 e inicia.
 | Linha 5 `TOTAL = TOTAL + 1` | Servidor (expressão) | Igual à linha 1. |
 | Linha 6 `SUSPEND` | Cliente | Registra a linha de saída. |
 
-Com a execução parada, o painel de variáveis mostra `ID`, `PRECO`, `TOTAL` e `PERCENTUAL`. Você pode adicionar um **watch**, por exemplo `PRECO * 1.1`, e ele é avaliado no servidor do mesmo jeito. Também pode editar uma variável.
+Com a execução parada, o painel de variáveis mostra `ID`, `PRECO`, `TOTAL` e `PERCENTUAL`. Você pode adicionar um **watch** na view Expressions, por exemplo `PRECO * 1.1`, e ele é avaliado no servidor do mesmo jeito. Também pode editar uma variável.
 
-### Breakpoints, step over e variáveis editadas
+### Breakpoints, step over, variáveis editadas e watches
 
 - O breakpoint é posto no texto da pasta Source do editor da Rotina: duplo-clique no ruler, "Alternar Breakpoint" no menu do ruler ou Ctrl+Shift+B na linha do cursor. Numa linha sem statement (`BEGIN`, `END`, comentário), ele vai para o próximo statement. Sem nenhum depois, é recusado.
 - O breakpoint não é persistente. Ele some quando o editor fecha e não volta depois de reiniciar o DBeaver.
 - A execução para antes do statement. Num laço, para também a cada volta, na linha do `WHILE` ou do `FOR SELECT`, antes de avaliar a condição ou de buscar a próxima linha. O step over (F6) vai ao próximo statement da mesma Rotina, ou de quem a chamou quando ela termina. O resume é o F8.
 - A camada de debug só para nas Rotinas que acompanha. Uma procedure de `FOR SELECT` interpretada no step over não para, nem com breakpoint.
 - O valor digitado na view Variables vai ao servidor como texto (`CAST(CAST(? AS VARCHAR(...)) AS <tipo>)`). Por isso vale o que um `CAST` aceita, como `'17.10.2026'` numa `DATE`. `NULL`, sem aspas, é o valor nulo. Num erro de conversão, a variável fica como estava.
-- Enquanto a execução está parada, a thread dela é a única que usa a conexão. A edição de uma variável (e, depois, os watches) roda nessa thread, pedida pela UI (`ExecutionControl.whilePaused`).
+- Um watch vai ao servidor como `SELECT (<expr>) FROM RDB$DATABASE`, com as variáveis do frame selecionado na view Debug. Ele é avaliado de novo a cada pausa e quando outro frame é selecionado. Um erro do servidor fica no lugar do valor (abra o watch para ver a mensagem), e a sessão continua pausada.
+- O texto do watch precisa ser uma expressão só: com `;`, com `,` fora de parênteses ou com parênteses desbalanceados, ele é recusado antes de ir ao servidor.
+- O watch não altera o banco. Ele roda num savepoint desfeito logo depois, e assim o DML de uma function ou procedure chamada nele não fica. `GEN_ID` (fora `GEN_ID(g, 0)`, que só lê), `NEXT VALUE FOR` e `RDB$SET_CONTEXT` são recusados, porque o savepoint não desfaz gerador nem variável de contexto.
+- Enquanto a execução está parada, a thread dela é a única que usa a conexão. A edição de uma variável e os watches rodam nessa thread, pedidos pela UI (`ExecutionControl.whilePaused`).
 
 ### 3. Fim
 
@@ -111,7 +114,7 @@ Mapa feito a partir dos nomes dos arquivos, dos ADRs e do glossário. Conferir n
 | Parser, AST e Pré-check | `psql/RoutineParser`, `AstBuilder`, `PreCheck`, `psql/ast/*` |
 | Interpretador | `interp/Interpreter`, `Frame`, `ExpressionEvaluator`, `DmlExecutor` |
 | Sessão de debug e pausa (breakpoint, step over, tarefas na pausa) | `interp/DebugSession`, `StatementHook`, `ExecutionControl`; linhas com statement em `psql/StatementLines` |
-| Modelo de debug do Eclipse (pilha, variáveis, breakpoints) | `debug/PsqlDebugTarget`, `PsqlThread`, `PsqlStackFrame`, `PsqlVariable`, `PsqlLineBreakpoint`, `PsqlSourceLocator` |
+| Modelo de debug do Eclipse (pilha, variáveis, breakpoints, watches) | `debug/PsqlDebugTarget`, `PsqlThread`, `PsqlStackFrame`, `PsqlVariable`, `PsqlLineBreakpoint`, `PsqlSourceLocator`, `PsqlWatchExpressionDelegate` |
 | Editor do DBeaver (ruler, linha da pausa) | `editor/EditorBreakpoints`, `RoutineEditors`, `PsqlModelPresentation`, handlers do `plugin.xml` |
 | Launch | `launch/DebugRoutineHandler`, `RoutineLaunchDialog`, `RoutineLauncher` |
 | Fonte da Rotina | `source/RoutineSourceLoader` |

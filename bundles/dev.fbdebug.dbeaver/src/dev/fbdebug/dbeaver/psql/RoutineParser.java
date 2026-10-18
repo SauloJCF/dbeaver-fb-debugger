@@ -111,6 +111,21 @@ public final class RoutineParser {
         return trigger.withInputs(inputs);
     }
 
+    /**
+     * Expressão de um watch, que o Interpretador avalia com as variáveis de um frame. O texto é uma expressão só:
+     * com {@code ;}, com {@code ,} fora de parênteses ou com parênteses desbalanceados, ele não é reconhecido, e
+     * assim não escapa do {@code SELECT (<expr>) FROM RDB$DATABASE} em que vai ao servidor. O resto da sintaxe é o
+     * servidor quem confere. As posições são deste texto.
+     *
+     * @throws PsqlSyntaxException se o texto não é uma expressão só, ou se usa {@code GEN_ID} (fora
+     *             {@code GEN_ID(g, 0)}, que só lê), {@code NEXT VALUE FOR} ou {@code RDB$SET_CONTEXT}, que alteram o
+     *             estado do banco mesmo dentro de um {@code SELECT}
+     */
+    public static Expression parseWatch(String text) {
+        Parsing parsing = new Parsing(text);
+        return parsing.builder.watch(parsing.parser.watchExpression());
+    }
+
     /** Léxico e parser de um texto, parando no primeiro erro. */
     private static final class Parsing {
 

@@ -21,6 +21,13 @@
                 class="dev.fbdebug.dbeaver.editor.PsqlModelPresentation"/>
     </extension>
 
+    <!-- Watches da view Expressions, avaliados no servidor com as variáveis do frame selecionado (issue 16). -->
+    <extension point="org.eclipse.debug.core.watchExpressionDelegates">
+        <watchExpressionDelegate
+                debugModel="dev.fbdebug.dbeaver.psql"
+                delegateClass="dev.fbdebug.dbeaver.debug.PsqlWatchExpressionDelegate"/>
+    </extension>
+
     <extension point="org.eclipse.ui.commands">
         <command
                 id="dev.fbdebug.dbeaver.debugRoutine"

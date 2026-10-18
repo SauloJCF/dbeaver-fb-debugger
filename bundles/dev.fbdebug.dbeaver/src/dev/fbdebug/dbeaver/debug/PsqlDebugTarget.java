@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -29,13 +30,15 @@ import dev.fbdebug.dbeaver.interp.ProcedureResult;
 import dev.fbdebug.dbeaver.interp.SessionAbortedException;
 import dev.fbdebug.dbeaver.interp.StatementHook;
 import dev.fbdebug.dbeaver.interp.Variable;
+import dev.fbdebug.dbeaver.interp.WatchValue;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 
 /**
  * Sessão de debug no modelo do Eclipse: um alvo com uma thread, a execução da Rotina, que roda numa thread própria.
- * Ela para nos breakpoints da conexão da sessão e no step over ({@link ExecutionControl}). As saídas, o erro ou a
- * interrupção vão para o {@link SessionConsole}. Terminate pede o fim à sessão ({@link DebugSession#abort()}): ela
- * para antes do próximo statement, mesmo pausada, e faz rollback.
+ * Ela para nos breakpoints da conexão da sessão e no step over ({@link ExecutionControl}). Na pausa, a edição de
+ * variáveis e os watches rodam na thread da execução. As saídas, o erro ou a interrupção vão para o
+ * {@link SessionConsole}. Terminate pede o fim à sessão ({@link DebugSession#abort()}): ela para antes do próximo
+ * statement, mesmo pausada, e faz rollback.
  */
 public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTarget {
 
@@ -48,7 +51,8 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
     }
 
     private static final ILog LOG = ILog.of(PsqlDebugTarget.class);
-    private static final int ASSIGN_TIMEOUT_SECONDS = 30;
+    /** Quanto a UI espera por uma tarefa na pausa (editar uma variável, avaliar um watch). */
+    private static final int TASK_TIMEOUT_SECONDS = 30;
 
     /** Breakpoint ativo numa linha de um texto de Rotina. */
     private record Location(SourceId source, int line) {
@@ -158,7 +162,7 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
             control.whilePaused(() -> {
                 current.assign(frame, variable, text);
                 return null;
-            }).get(ASSIGN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            }).get(TASK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             String reason = cause instanceof SQLException ? "o servidor não converteu o valor para "
@@ -170,6 +174,22 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
             Thread.currentThread().interrupt();
             throw new DebugException(Status.error(variable.name() + " não foi alterada.", e));
         }
+    }
+
+    /**
+     * Valor de um watch com as variáveis do frame ({@link DebugSession#watch}), avaliado na thread da execução
+     * pausada, que é a dona da conexão. Não espera: o valor chega pelo futuro.
+     *
+     * @return falha com o erro do servidor ou do parser, ou com {@link TimeoutException} se o servidor não responder a
+     *         tempo; a sessão segue pausada
+     */
+    CompletableFuture<WatchValue> watch(Frame frame, String text) {
+        DebugSession current = session;
+        if (current == null || !thread.isSuspended()) {
+            return CompletableFuture.failedFuture(new IllegalStateException("A execução não está pausada."));
+        }
+        return control.whilePaused(() -> current.watch(frame, text)).orTimeout(TASK_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS);
     }
 
     /** Texto de que são as posições do frame. */

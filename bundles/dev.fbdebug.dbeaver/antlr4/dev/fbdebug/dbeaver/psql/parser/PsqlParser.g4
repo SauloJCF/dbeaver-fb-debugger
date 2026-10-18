@@ -286,6 +286,11 @@ expressionContent
     | ~( LPAREN | RPAREN )
     ;
 
+// Expressão de um watch (RoutineParser.parseWatch): uma só, até o fim do texto.
+watchExpression
+    : expression EOF
+    ;
+
 // Palavras-chave não reservadas do Firebird, que podem ser nome de variável ou label. THEN, ELSE, WHILE, FOR,
 // OPEN, FETCH, CLOSE, CURSOR, USING, WHEN, FUNCTION, RETURN e DETERMINISTIC são reservadas. Manter em sincronia
 // com AstBuilder.isIdentifier.

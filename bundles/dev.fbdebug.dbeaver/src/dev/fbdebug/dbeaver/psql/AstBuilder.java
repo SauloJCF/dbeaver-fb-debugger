@@ -135,6 +135,52 @@ final class AstBuilder {
                 null, block.routineBody(), null);
     }
 
+    /**
+     * Expressão de um watch ({@link RoutineParser#parseWatch}). Recusa o que altera o estado do banco mesmo dentro
+     * de um {@code SELECT} e que o savepoint em que o watch é avaliado não desfaz: gerador e variável de contexto.
+     */
+    Expression watch(PsqlParser.WatchExpressionContext ctx) {
+        PsqlParser.ExpressionContext expression = ctx.expression();
+        List<Integer> visible = visible(expression.getStart().getTokenIndex(), expression.getStop().getTokenIndex());
+        for (int k = 0; k < visible.size(); k++) {
+            String refused = changesDatabase(visible, k);
+            if (refused != null) {
+                throw new PsqlSyntaxException(refused + " não é permitido num watch, porque altera o estado do banco",
+                        position(tokens.get(visible.get(k))));
+            }
+        }
+        return expression(expression);
+    }
+
+    /**
+     * Construção que, a partir do token visível {@code k}, altera o estado do banco: {@code GEN_ID(g, n)} com
+     * {@code n} diferente de 0 (com 0, só lê o gerador), {@code NEXT VALUE FOR} e {@code RDB$SET_CONTEXT(}.
+     *
+     * @return o nome da construção, ou {@code null}
+     */
+    private String changesDatabase(List<Integer> visible, int k) {
+        Token token = tokens.get(visible.get(k));
+        if (isWord(token, "RDB$SET_CONTEXT") && type(visible, k + 1) == PsqlLexer.LPAREN) {
+            return "RDB$SET_CONTEXT";
+        }
+        if (isWord(token, "GEN_ID") && type(visible, k + 1) == PsqlLexer.LPAREN) {
+            boolean reads = isIdentifier(type(visible, k + 2)) && type(visible, k + 3) == PsqlLexer.COMMA
+                    && type(visible, k + 4) == PsqlLexer.NUMBER && tokens.get(visible.get(k + 4)).getText().equals("0")
+                    && type(visible, k + 5) == PsqlLexer.RPAREN;
+            return reads ? null : "GEN_ID";
+        }
+        if (isWord(token, "NEXT") && k + 1 < visible.size() && isWord(tokens.get(visible.get(k + 1)), "VALUE")
+                && type(visible, k + 2) == PsqlLexer.FOR) {
+            return "NEXT VALUE FOR";
+        }
+        return null;
+    }
+
+    /** Tipo do token visível {@code k}, ou {@link Token#EOF} depois do último. */
+    private int type(List<Integer> visible, int k) {
+        return k < visible.size() ? tokens.get(visible.get(k)).getType() : Token.EOF;
+    }
+
     /** Trigger, sem entradas (ver {@link RoutineParser#parseTrigger}). */
     private RoutineDefinition trigger(PsqlParser.TriggerDefinitionContext ctx) {
         trigger = true;

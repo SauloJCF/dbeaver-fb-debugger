@@ -2,7 +2,10 @@ package dev.fbdebug.dbeaver.psql;
 
 import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 
-/** Texto que a gramática da camada procedural não reconhece. */
+/**
+ * Texto que a gramática da camada procedural não reconhece, ou, num watch, que o parser recusa (ver
+ * {@link RoutineParser#parseWatch}).
+ */
 public final class PsqlSyntaxException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;

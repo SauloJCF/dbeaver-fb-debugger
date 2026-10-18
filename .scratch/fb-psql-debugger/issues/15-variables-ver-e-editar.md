@@ -11,9 +11,9 @@ Blocked by: 14
 
 ## Critérios de aceite
 
-- [ ] Alterar uma variável usada num `IF` muda o caminho tomado no próximo step.
-- [ ] Valor inválido para o tipo (ex.: texto em `INTEGER`) mostra erro e não altera a variável.
-- [ ] Valores `NUMERIC`, `DATE`, `TIMESTAMP`, `BLOB SUB_TYPE TEXT` e `NULL` exibidos legivelmente.
+- [x] Alterar uma variável usada num `IF` muda o caminho tomado no próximo step.
+- [x] Valor inválido para o tipo (ex.: texto em `INTEGER`) mostra erro e não altera a variável.
+- [x] Valores `NUMERIC`, `DATE`, `TIMESTAMP`, `BLOB SUB_TYPE TEXT` e `NULL` exibidos legivelmente.
 
 ## Comments
 

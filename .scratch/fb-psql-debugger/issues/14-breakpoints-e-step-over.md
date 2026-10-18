@@ -12,10 +12,10 @@ Blocked by: 03, 13
 
 ## Critérios de aceite
 
-- [ ] Procedure com `IF`/`WHILE` para em cada breakpoint na ordem certa; step over avança statement a statement.
-- [ ] Fechar e reabrir o editor: nenhum breakpoint.
-- [ ] Reiniciar o DBeaver: nenhum breakpoint na view Breakpoints.
-- [ ] Linha destacada bate com o texto do editor (cabeçalho gerado pelo DBeaver considerado — ver issue 09).
+- [x] Procedure com `IF`/`WHILE` para em cada breakpoint na ordem certa; step over avança statement a statement.
+- [x] Fechar e reabrir o editor: nenhum breakpoint.
+- [x] Reiniciar o DBeaver: nenhum breakpoint na view Breakpoints.
+- [x] Linha destacada bate com o texto do editor (cabeçalho gerado pelo DBeaver considerado — ver issue 09).
 
 ## Comments
 

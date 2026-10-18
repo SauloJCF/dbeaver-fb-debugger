@@ -6,7 +6,7 @@ import java.sql.Savepoint;
 
 /**
  * Savepoint para desfazer uma unidade inteira (statement, bloco com {@code WHEN} ou chamada de Rotina) quando ela
- * falha.
+ * falha, ou para desfazer sempre o que a avaliação de um watch alterou.
  */
 final class Savepoints {
 
@@ -29,6 +29,21 @@ final class Savepoints {
             undo(connection, savepoint, e);
             throw e;
         }
+        connection.releaseSavepoint(savepoint);
+        return result;
+    }
+
+    /** Executa sob savepoint e desfaz o que o trecho alterou, com ou sem falha. */
+    static <T> T undone(Connection connection, SqlCall<T> call) throws SQLException {
+        Savepoint savepoint = connection.setSavepoint();
+        T result;
+        try {
+            result = call.run();
+        } catch (SQLException | RuntimeException e) {
+            undo(connection, savepoint, e);
+            throw e;
+        }
+        connection.rollback(savepoint);
         connection.releaseSavepoint(savepoint);
         return result;
     }

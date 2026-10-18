@@ -38,6 +38,16 @@ final class ExpressionEvaluator {
         return selectSingleValue("SELECT (" + bound.sql() + ") FROM RDB$DATABASE", bound.parameters());
     }
 
+    /** Valor da expressão e o tipo que o servidor dá a ela, como em {@link #value}. */
+    WatchValue typedValue(Expression expression, Frame frame) throws SQLException {
+        BoundSql bound = BoundSql.bind(expression, frame);
+        try (PreparedStatement statement = prepare("SELECT (" + bound.sql() + ") FROM RDB$DATABASE",
+                bound.parameters()); ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+            return new WatchValue(resultSet.getObject(1), ColumnTypes.name(resultSet.getMetaData(), 1));
+        }
+    }
+
     /**
      * Condição de {@code IF}/{@code WHILE}. Vai no {@code WHERE}, então só {@code TRUE} devolve linha:
      * {@code FALSE} e desconhecido ({@code NULL}) valem como falso, com a lógica de três valores do servidor.

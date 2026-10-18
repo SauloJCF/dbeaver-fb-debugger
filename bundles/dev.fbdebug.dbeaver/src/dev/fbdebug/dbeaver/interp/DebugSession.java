@@ -7,6 +7,8 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import dev.fbdebug.dbeaver.psql.PreCheck;
+import dev.fbdebug.dbeaver.psql.PsqlSyntaxException;
+import dev.fbdebug.dbeaver.psql.RoutineParser;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 
 /**
@@ -107,6 +109,18 @@ public final class DebugSession implements AutoCloseable {
      */
     public void assign(Frame frame, Variable variable, String text) throws SQLException {
         interpreter.assignText(frame, variable, text);
+    }
+
+    /**
+     * Valor de um watch no frame, com a execução parada (ver {@link Interpreter#watch}). Na thread da execução: com
+     * um {@link ExecutionControl}, por {@link ExecutionControl#whilePaused}.
+     *
+     * @throws PsqlSyntaxException se o texto não é uma expressão só, ou se altera o estado do banco (ver
+     *             {@link RoutineParser#parseWatch})
+     * @throws SQLException o erro do servidor ao avaliar a expressão
+     */
+    public WatchValue watch(Frame frame, String text) throws SQLException {
+        return interpreter.watch(frame, RoutineParser.parseWatch(text));
     }
 
     /**

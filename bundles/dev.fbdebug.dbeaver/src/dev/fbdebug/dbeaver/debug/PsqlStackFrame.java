@@ -1,7 +1,9 @@
 package dev.fbdebug.dbeaver.debug;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 import org.eclipse.debug.core.model.IRegisterGroup;
 import org.eclipse.debug.core.model.IStackFrame;
@@ -10,6 +12,7 @@ import org.eclipse.debug.core.model.IVariable;
 
 import dev.fbdebug.dbeaver.interp.Frame;
 import dev.fbdebug.dbeaver.interp.Variable;
+import dev.fbdebug.dbeaver.interp.WatchValue;
 
 /**
  * Frame do Interpretador numa pausa: a Rotina, a linha do statement em execução e as variáveis dela. A linha é a do
@@ -18,6 +21,7 @@ import dev.fbdebug.dbeaver.interp.Variable;
 final class PsqlStackFrame extends PsqlDebugElement implements IStackFrame {
 
     private final PsqlThread thread;
+    private final PsqlDebugTarget target;
     private final Frame frame;
     private final SourceId source;
     private final int line;
@@ -31,6 +35,7 @@ final class PsqlStackFrame extends PsqlDebugElement implements IStackFrame {
             Map<Variable, Object> previous) {
         super(target);
         this.thread = thread;
+        this.target = target;
         this.frame = frame;
         this.source = source;
         this.line = frame.position().line();
@@ -43,6 +48,16 @@ final class PsqlStackFrame extends PsqlDebugElement implements IStackFrame {
     /** Texto de que é a linha do frame. */
     SourceId source() {
         return source;
+    }
+
+    /** O frame é da pausa em que a execução está parada; o de uma pausa anterior já não vale. */
+    boolean isCurrent() {
+        return Arrays.asList(thread.getStackFrames()).contains(this);
+    }
+
+    /** Valor de um watch com as variáveis deste frame (ver {@link PsqlDebugTarget#watch}). */
+    CompletableFuture<WatchValue> watch(String text) {
+        return target.watch(frame, text);
     }
 
     @Override

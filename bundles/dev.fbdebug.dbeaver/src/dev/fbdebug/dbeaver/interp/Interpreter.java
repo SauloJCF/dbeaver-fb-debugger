@@ -150,6 +150,19 @@ public final class Interpreter {
     }
 
     /**
+     * Valor de um watch com a execução parada: a expressão avaliada no servidor com as variáveis do frame, como as da
+     * Rotina (Modo Careful), e o tipo que o servidor dá a ela. A avaliação roda sob um savepoint desfeito no fim, e
+     * o que a expressão chama (uma function ou procedure com DML) não altera o banco. As variáveis e o
+     * {@code ROW_COUNT} do frame ficam como estavam.
+     *
+     * @param frame frame da pilha da execução parada ({@link #frames()})
+     * @param expression ver {@code RoutineParser.parseWatch}
+     */
+    public WatchValue watch(Frame frame, Expression expression) throws SQLException {
+        return Savepoints.undone(connection, () -> evaluator.typedValue(expression, frame));
+    }
+
+    /**
      * Valores das entradas de uma chamada, cada um já convertido para o tipo do parâmetro, como o motor faz ao
      * passá-los.
      */
