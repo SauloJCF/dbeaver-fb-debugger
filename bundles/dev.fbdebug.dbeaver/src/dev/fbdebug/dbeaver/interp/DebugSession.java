@@ -102,6 +102,14 @@ public final class DebugSession implements AutoCloseable {
     }
 
     /**
+     * Valor novo para uma variável, digitado com a execução parada (ver {@link Interpreter#assignText}). Na thread da
+     * execução: com um {@link ExecutionControl}, por {@link ExecutionControl#whilePaused}.
+     */
+    public void assign(Frame frame, Variable variable, String text) throws SQLException {
+        interpreter.assignText(frame, variable, text);
+    }
+
+    /**
      * Executa a Rotina como executável (ver {@link Interpreter#execute}).
      *
      * @throws PsqlExecutionException se o Pré-check recusar a Rotina, antes de executar qualquer coisa

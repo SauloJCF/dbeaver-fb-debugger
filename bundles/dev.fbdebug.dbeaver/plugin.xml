@@ -14,11 +14,31 @@
                 public="false"/>
     </extension>
 
+    <!-- Rótulos, detalhe dos valores e o editor da linha da pausa (issue 14). -->
+    <extension point="org.eclipse.debug.ui.debugModelPresentations">
+        <debugModelPresentation
+                id="dev.fbdebug.dbeaver.psql"
+                class="dev.fbdebug.dbeaver.editor.PsqlModelPresentation"/>
+    </extension>
+
     <extension point="org.eclipse.ui.commands">
         <command
                 id="dev.fbdebug.dbeaver.debugRoutine"
                 name="Depurar Rotina"
                 description="Inicia uma Sessão de debug da Rotina Firebird"/>
+        <command
+                id="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
+                name="Alternar Breakpoint"
+                description="Alterna o breakpoint da linha clicada no ruler do editor de Rotina Firebird"/>
+    </extension>
+
+    <extension point="org.eclipse.core.expressions.propertyTesters">
+        <propertyTester
+                id="dev.fbdebug.dbeaver.routineEditorTester"
+                type="java.lang.Object"
+                namespace="dev.fbdebug.dbeaver"
+                properties="breakpointSource"
+                class="dev.fbdebug.dbeaver.editor.RoutineEditorTester"/>
     </extension>
 
     <extension point="org.eclipse.ui.handlers">
@@ -44,10 +64,33 @@
                 </or>
             </enabledWhen>
         </handler>
-        <!-- O debug.ui só liga Ctrl+Shift+B a um handler via breakpointActionSet, que o DBeaver não exibe. -->
+        <!-- Ctrl+Shift+B: o debug.ui só liga o comando a um handler pelo breakpointActionSet, que o DBeaver não
+             exibe. Ativo só no editor de objeto de Rotina Firebird, para não tomar o comando de outros debuggers. -->
         <handler
                 commandId="org.eclipse.debug.ui.commands.ToggleBreakpoint"
-                class="dev.fbdebug.dbeaver.prototype.PrototypeToggleBreakpointHandler"/>
+                class="dev.fbdebug.dbeaver.editor.ToggleBreakpointHandler">
+            <activeWhen>
+                <and>
+                    <with variable="activePartId">
+                        <equals value="org.jkiss.dbeaver.ui.editors.entity.EntityEditor"/>
+                    </with>
+                    <with variable="activeEditorInput">
+                        <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                        <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
+                    </with>
+                </and>
+            </activeWhen>
+        </handler>
+        <handler
+                commandId="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
+                class="dev.fbdebug.dbeaver.editor.RulerToggleBreakpointHandler">
+            <enabledWhen>
+                <with variable="activeEditorInput">
+                    <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                    <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
+                </with>
+            </enabledWhen>
+        </handler>
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -56,35 +99,95 @@
                 <command commandId="dev.fbdebug.dbeaver.debugRoutine"/>
             </menu>
         </menuContribution>
-        <!-- Menu de contexto do navegador e do editor de objeto: só aparece com a Rotina Firebird. -->
+        <!-- Menu de contexto do navegador: só aparece com a Rotina Firebird. O grupo generate só existe nos menus que o
+             DBeaver monta com o NavigatorUtils; no texto da pasta Source o item vem da contribuição seguinte. Não é
+             checkEnabled: com uma view do debug ou o console em foco, o comando vale para o editor ativo (menu
+             "PSQL Debug"), mas não deve aparecer no menu de contexto delas. -->
         <menuContribution allPopups="false" locationURI="popup:org.eclipse.ui.popup.any?after=generate">
             <command commandId="dev.fbdebug.dbeaver.debugRoutine">
+                <visibleWhen>
+                    <or>
+                        <and>
+                            <with variable="activePart">
+                                <instanceof value="org.eclipse.ui.IEditorPart"/>
+                            </with>
+                            <with variable="activeEditorInput">
+                                <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                                <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
+                            </with>
+                        </and>
+                        <and>
+                            <with variable="activePart">
+                                <not>
+                                    <instanceof value="org.eclipse.ui.IEditorPart"/>
+                                </not>
+                            </with>
+                            <with variable="selection">
+                                <instanceof value="org.eclipse.jface.viewers.IStructuredSelection"/>
+                                <count value="1"/>
+                                <iterate operator="and">
+                                    <adapt type="org.jkiss.dbeaver.model.struct.rdb.DBSProcedure">
+                                        <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdProcedure"/>
+                                    </adapt>
+                                </iterate>
+                            </with>
+                        </and>
+                    </or>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <!-- Menu de contexto do texto dos editores SQL do DBeaver (a pasta Source do editor de objeto), que não tem o
+             grupo generate. Só no editor de uma Rotina Firebird. -->
+        <menuContribution allPopups="false" locationURI="popup:#SQLEditorContext?after=additions">
+            <command commandId="dev.fbdebug.dbeaver.debugRoutine">
+                <visibleWhen>
+                    <with variable="activeEditorInput">
+                        <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                        <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <!-- Menu de contexto do ruler dos editores SQL do DBeaver. -->
+        <menuContribution allPopups="false" locationURI="popup:#SQLRulerContext?before=additions">
+            <command commandId="dev.fbdebug.dbeaver.rulerToggleBreakpoint">
                 <visibleWhen checkEnabled="true"/>
             </command>
         </menuContribution>
     </extension>
 
-    <!-- ===== Breakpoints do protótipo da issue 01, sem efeito real; a issue 14 os substitui ===== -->
+    <!-- ===== Breakpoints de linha (issue 14) ===== -->
 
+    <!-- Não persistente: o breakpoint existe só enquanto o editor da Rotina está aberto (ADR 0004). -->
     <extension point="org.eclipse.core.resources.markers"
-               id="prototypeLineBreakpointMarker"
-               name="Firebird PSQL breakpoint (protótipo)">
+               id="lineBreakpointMarker"
+               name="Firebird PSQL breakpoint">
         <super type="org.eclipse.debug.core.lineBreakpointMarker"/>
         <persistent value="false"/>
     </extension>
 
     <extension point="org.eclipse.debug.core.breakpoints">
         <breakpoint
-                id="dev.fbdebug.dbeaver.prototype.lineBreakpoint"
-                markerType="dev.fbdebug.dbeaver.prototypeLineBreakpointMarker"
-                class="dev.fbdebug.dbeaver.prototype.PrototypeLineBreakpoint"
-                name="Firebird PSQL breakpoint (protótipo)"/>
+                id="dev.fbdebug.dbeaver.lineBreakpoint"
+                markerType="dev.fbdebug.dbeaver.lineBreakpointMarker"
+                class="dev.fbdebug.dbeaver.debug.PsqlLineBreakpoint"
+                name="Firebird PSQL breakpoint"/>
     </extension>
 
-    <extension point="org.eclipse.debug.ui.toggleBreakpointsTargetFactories">
-        <toggleTargetFactory
-                id="dev.fbdebug.dbeaver.prototype.toggleTargetFactory"
-                class="dev.fbdebug.dbeaver.prototype.PrototypeToggleTargetFactory"/>
+    <!-- Duplo-clique no ruler: o editor de texto da pasta Source do editor de procedure (site "generic.source.view")
+         procura a ação RulerDoubleClick nas contribuições com o id do site dele, na hora do clique. A ação roda o
+         comando de definitionId; a classe só valeria para um editor de primeiro nível com esse id, que não existe. -->
+    <extension point="org.eclipse.ui.editorActions">
+        <editorContribution
+                id="dev.fbdebug.dbeaver.sourceRulerActions"
+                targetID="generic.source.view">
+            <action
+                    id="dev.fbdebug.dbeaver.rulerDoubleClick"
+                    label="Alternar Breakpoint"
+                    actionID="RulerDoubleClick"
+                    definitionId="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
+                    class="org.eclipse.debug.ui.actions.RulerToggleBreakpointActionDelegate"/>
+        </editorContribution>
     </extension>
 
 </plugin>

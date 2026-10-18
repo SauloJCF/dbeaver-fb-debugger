@@ -135,6 +135,21 @@ public final class Interpreter {
     }
 
     /**
+     * Valor novo para uma variável, digitado por quem depura com a execução parada. O texto é convertido pelo servidor
+     * para o tipo da variável, como um {@code CAST} de texto ({@code '17.10.2026'} numa {@code DATE}, {@code '1.5'}
+     * arredondado num {@code INTEGER}); {@code NULL}, sem aspas, é o valor nulo. Como numa atribuição, {@code NULL}
+     * numa variável {@code NOT NULL} é erro, e a variável que o {@code SELECT} de um cursor aberto usa não muda. Num
+     * erro, a variável fica como estava.
+     *
+     * @param frame frame de que a variável é ({@link Frame#variables()})
+     */
+    public void assignText(Frame frame, Variable variable, String text) throws SQLException {
+        Object value = text.strip().equalsIgnoreCase("NULL") ? null
+                : evaluator.assignable(Collections.singletonList(text), List.of(variable.type())).get(0);
+        store(variable, value, frame);
+    }
+
+    /**
      * Valores das entradas de uma chamada, cada um já convertido para o tipo do parâmetro, como o motor faz ao
      * passá-los.
      */
@@ -436,17 +451,23 @@ public final class Interpreter {
         while (evaluator.isTrue(loop.condition(), frame)) {
             Jump jump = execute(loop.body(), frame);
             frame.position(loop.position());
-            if (jump == null) {
-                continue;
+            if (jump != null) {
+                if (!jump.targets(loop.label())) {
+                    return jump; // EXIT, ou LEAVE/CONTINUE com o label de um laço de fora
+                }
+                if (jump.kind() == Jump.Kind.LEAVE) {
+                    break;
+                }
             }
-            if (!jump.targets(loop.label())) {
-                return jump; // EXIT, ou LEAVE/CONTINUE com o label de um laço de fora
-            }
-            if (jump.kind() == Jump.Kind.LEAVE) {
-                break;
-            }
+            nextIteration(loop, frame);
         }
         return null;
+    }
+
+    /** Antes de cada volta de um laço depois da primeira (ver {@link StatementHook}). */
+    private void nextIteration(Statement loop, Frame frame) {
+        frame.position(loop.position());
+        hook.beforeStatement(frame, loop);
     }
 
     /**
@@ -484,6 +505,7 @@ public final class Interpreter {
                     if (jump != null && jump.kind() == Jump.Kind.LEAVE) {
                         break;
                     }
+                    nextIteration(loop, frame);
                 }
             } finally {
                 frame.leaveLoop(cursor);
@@ -535,6 +557,7 @@ public final class Interpreter {
                         if (jump != null && jump.kind() == Jump.Kind.LEAVE) {
                             throw new LoopExit(owner, null, null);
                         }
+                        nextIteration(loop, frame); // com a procedure ainda fora da pilha
                         frame.savepoints().beforeChange(); // a procedure continua e pode alterar dados
                     } catch (SQLException e) {
                         throw new LoopExit(owner, null, e);
@@ -766,6 +789,7 @@ public final class Interpreter {
                     if (jump != null && jump.kind() == Jump.Kind.LEAVE) {
                         break;
                     }
+                    nextIteration(loop, frame);
                 }
             } finally {
                 frame.leaveLoop(cursor);

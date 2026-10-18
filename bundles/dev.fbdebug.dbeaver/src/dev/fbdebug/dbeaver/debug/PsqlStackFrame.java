@@ -1,11 +1,15 @@
 package dev.fbdebug.dbeaver.debug;
 
+import java.util.Map;
+import java.util.Objects;
+
 import org.eclipse.debug.core.model.IRegisterGroup;
 import org.eclipse.debug.core.model.IStackFrame;
 import org.eclipse.debug.core.model.IThread;
 import org.eclipse.debug.core.model.IVariable;
 
 import dev.fbdebug.dbeaver.interp.Frame;
+import dev.fbdebug.dbeaver.interp.Variable;
 
 /**
  * Frame do Interpretador numa pausa: a Rotina, a linha do statement em execução e as variáveis dela. A linha é a do
@@ -15,17 +19,30 @@ final class PsqlStackFrame extends PsqlDebugElement implements IStackFrame {
 
     private final PsqlThread thread;
     private final Frame frame;
+    private final SourceId source;
     private final int line;
     private final IVariable[] variables;
 
-    PsqlStackFrame(PsqlThread thread, Frame frame) {
-        super(thread.getDebugTarget());
+    /**
+     * @param previous valor de cada variável na pausa anterior, para destacar as que mudaram; sem a variável, ela
+     *            não existia
+     */
+    PsqlStackFrame(PsqlThread thread, PsqlDebugTarget target, Frame frame, SourceId source,
+            Map<Variable, Object> previous) {
+        super(target);
         this.thread = thread;
         this.frame = frame;
+        this.source = source;
         this.line = frame.position().line();
         this.variables = frame.variables().stream()
-                .map(variable -> new PsqlVariable(thread.getDebugTarget(), variable))
+                .map(variable -> new PsqlVariable(target, frame, variable, previous.containsKey(variable)
+                        && !Objects.deepEquals(previous.get(variable), variable.value())))
                 .toArray(IVariable[]::new);
+    }
+
+    /** Texto de que é a linha do frame. */
+    SourceId source() {
+        return source;
     }
 
     @Override

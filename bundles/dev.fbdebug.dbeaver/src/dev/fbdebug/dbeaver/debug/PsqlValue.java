@@ -1,12 +1,10 @@
 package dev.fbdebug.dbeaver.debug;
 
-import java.util.HexFormat;
-
 import org.eclipse.debug.core.model.IDebugTarget;
 import org.eclipse.debug.core.model.IValue;
 import org.eclipse.debug.core.model.IVariable;
 
-/** Valor de uma variável ou saída, como o Jaybird o devolveu. */
+/** Valor de uma variável num momento, como o Jaybird o devolveu; o texto é o de {@link ValueText}. */
 final class PsqlValue extends PsqlDebugElement implements IValue {
 
     private final String type;
@@ -18,17 +16,6 @@ final class PsqlValue extends PsqlDebugElement implements IValue {
         this.value = value;
     }
 
-    /** Texto para mostrar: {@code NULL}, bytes em hexadecimal, o resto como o Java o escreve. */
-    static String format(Object value) {
-        if (value == null) {
-            return "NULL";
-        }
-        if (value instanceof byte[] bytes) {
-            return "0x" + HexFormat.of().withUpperCase().formatHex(bytes);
-        }
-        return value.toString();
-    }
-
     @Override
     public String getReferenceTypeName() {
         return type;
@@ -36,7 +23,7 @@ final class PsqlValue extends PsqlDebugElement implements IValue {
 
     @Override
     public String getValueString() {
-        return format(value);
+        return ValueText.of(value);
     }
 
     @Override

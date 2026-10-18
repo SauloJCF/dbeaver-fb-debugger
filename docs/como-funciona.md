@@ -38,7 +38,7 @@ END
 
 ### 1. Launch
 
-No DBeaver você escolhe a Rotina e abre o diálogo de launch. Nele preenche `PERCENTUAL = 10`, o isolamento da transação e se quer "commit ao terminar". O launch é a única forma de iniciar uma sessão, e não existe attach.
+No DBeaver você escolhe a Rotina e abre o diálogo de launch, por "Depurar Rotina" no menu de contexto do navegador ou do editor da Rotina, ou no menu "PSQL Debug". Com uma view do debug ou o console em foco, o menu "PSQL Debug" usa a Rotina do editor ativo. No diálogo você preenche `PERCENTUAL = 10`, o isolamento da transação e se quer "commit ao terminar". O launch é a única forma de iniciar uma sessão, e não existe attach.
 
 Antes de começar, o plugin lê o texto da Rotina nos metadados do banco (a **Fonte do banco**). Se o editor tiver alterações não salvas, o launch é bloqueado, para garantir que o que você vê é o que roda. Em seguida o **Pré-check** varre o AST. Se houver uma construção não suportada, ele recusa o launch e mostra linha e coluna. Isso segue o ADR 0001: nada é executado "mais ou menos".
 
@@ -56,6 +56,15 @@ Você coloca um breakpoint na linha 4 e inicia.
 | Linha 6 `SUSPEND` | Cliente | Registra a linha de saída. |
 
 Com a execução parada, o painel de variáveis mostra `ID`, `PRECO`, `TOTAL` e `PERCENTUAL`. Você pode adicionar um **watch**, por exemplo `PRECO * 1.1`, e ele é avaliado no servidor do mesmo jeito. Também pode editar uma variável.
+
+### Breakpoints, step over e variáveis editadas
+
+- O breakpoint é posto no texto da pasta Source do editor da Rotina: duplo-clique no ruler, "Alternar Breakpoint" no menu do ruler ou Ctrl+Shift+B na linha do cursor. Numa linha sem statement (`BEGIN`, `END`, comentário), ele vai para o próximo statement. Sem nenhum depois, é recusado.
+- O breakpoint não é persistente. Ele some quando o editor fecha e não volta depois de reiniciar o DBeaver.
+- A execução para antes do statement. Num laço, para também a cada volta, na linha do `WHILE` ou do `FOR SELECT`, antes de avaliar a condição ou de buscar a próxima linha. O step over (F6) vai ao próximo statement da mesma Rotina, ou de quem a chamou quando ela termina. O resume é o F8.
+- A camada de debug só para nas Rotinas que acompanha. Uma procedure de `FOR SELECT` interpretada no step over não para, nem com breakpoint.
+- O valor digitado na view Variables vai ao servidor como texto (`CAST(CAST(? AS VARCHAR(...)) AS <tipo>)`). Por isso vale o que um `CAST` aceita, como `'17.10.2026'` numa `DATE`. `NULL`, sem aspas, é o valor nulo. Num erro de conversão, a variável fica como estava.
+- Enquanto a execução está parada, a thread dela é a única que usa a conexão. A edição de uma variável (e, depois, os watches) roda nessa thread, pedida pela UI (`ExecutionControl.whilePaused`).
 
 ### 3. Fim
 
@@ -101,8 +110,9 @@ Mapa feito a partir dos nomes dos arquivos, dos ADRs e do glossário. Conferir n
 |---|---|
 | Parser, AST e Pré-check | `psql/RoutineParser`, `AstBuilder`, `PreCheck`, `psql/ast/*` |
 | Interpretador | `interp/Interpreter`, `Frame`, `ExpressionEvaluator`, `DmlExecutor` |
-| Sessão de debug | `interp/DebugSession`, `StatementHook` |
-| Integração com Eclipse e DBeaver (pilha, variáveis, breakpoints) | `debug/PsqlDebugTarget`, `PsqlThread`, `PsqlStackFrame`, `PsqlVariable` |
+| Sessão de debug e pausa (breakpoint, step over, tarefas na pausa) | `interp/DebugSession`, `StatementHook`, `ExecutionControl`; linhas com statement em `psql/StatementLines` |
+| Modelo de debug do Eclipse (pilha, variáveis, breakpoints) | `debug/PsqlDebugTarget`, `PsqlThread`, `PsqlStackFrame`, `PsqlVariable`, `PsqlLineBreakpoint`, `PsqlSourceLocator` |
+| Editor do DBeaver (ruler, linha da pausa) | `editor/EditorBreakpoints`, `RoutineEditors`, `PsqlModelPresentation`, handlers do `plugin.xml` |
 | Launch | `launch/DebugRoutineHandler`, `RoutineLaunchDialog`, `RoutineLauncher` |
 | Fonte da Rotina | `source/RoutineSourceLoader` |
 | Packages temporários (sub-rotinas) | `interp/TemporaryPackages` |

@@ -43,6 +43,12 @@ public final class SessionConsole {
         return created;
     }
 
+    /** Aviso antes do início da sessão, que não a impede. */
+    public void warn(String message) {
+        ConsolePlugin.getDefault().getConsoleManager().showConsoleView(console);
+        print("\nAviso: " + message + "\n");
+    }
+
     void started(RoutineDefinition routine, List<Object> inputs) {
         ConsolePlugin.getDefault().getConsoleManager().showConsoleView(console);
         StringBuilder text = new StringBuilder("\n== ").append(routine.displayName()).append(" (").append(isolation)
@@ -50,7 +56,7 @@ public final class SessionConsole {
         for (int i = 0; i < routine.inputs().size(); i++) {
             ParameterDeclaration input = routine.inputs().get(i);
             text.append("   ").append(input.name()).append(" = ")
-                    .append(i < inputs.size() ? PsqlValue.format(inputs.get(i)) : "(padrão)").append('\n');
+                    .append(i < inputs.size() ? ValueText.of(inputs.get(i)) : "(padrão)").append('\n');
         }
         print(text.toString());
     }
@@ -62,7 +68,7 @@ public final class SessionConsole {
         }
         for (int i = 0; i < result.names().size(); i++) {
             text.append("   ").append(result.names().get(i)).append(" = ")
-                    .append(PsqlValue.format(result.values().get(i))).append('\n');
+                    .append(ValueText.of(result.values().get(i))).append('\n');
         }
         text.append(committed ? "Fim: commit feito.\n" : "Fim: rollback feito.\n");
         print(text.toString());

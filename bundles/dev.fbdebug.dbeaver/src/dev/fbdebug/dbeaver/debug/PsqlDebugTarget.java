@@ -1,10 +1,20 @@
 package dev.fbdebug.dbeaver.debug;
 
 import java.sql.SQLException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.eclipse.core.resources.IMarkerDelta;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.Status;
+import org.eclipse.debug.core.DebugException;
+import org.eclipse.debug.core.DebugPlugin;
+import org.eclipse.debug.core.IBreakpointManager;
 import org.eclipse.debug.core.ILaunch;
 import org.eclipse.debug.core.model.IBreakpoint;
 import org.eclipse.debug.core.model.IDebugTarget;
@@ -13,27 +23,39 @@ import org.eclipse.debug.core.model.IProcess;
 import org.eclipse.debug.core.model.IThread;
 
 import dev.fbdebug.dbeaver.interp.DebugSession;
+import dev.fbdebug.dbeaver.interp.ExecutionControl;
 import dev.fbdebug.dbeaver.interp.Frame;
 import dev.fbdebug.dbeaver.interp.ProcedureResult;
 import dev.fbdebug.dbeaver.interp.SessionAbortedException;
+import dev.fbdebug.dbeaver.interp.StatementHook;
+import dev.fbdebug.dbeaver.interp.Variable;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 
 /**
- * Sessão de debug no modelo do Eclipse: um alvo com uma thread, a execução da Rotina, que roda numa thread própria
- * até o fim. As saídas, o erro ou a interrupção vão para o {@link SessionConsole}. Terminate pede o fim à sessão
- * ({@link DebugSession#abort()}): ela para antes do próximo statement e faz rollback.
+ * Sessão de debug no modelo do Eclipse: um alvo com uma thread, a execução da Rotina, que roda numa thread própria.
+ * Ela para nos breakpoints da conexão da sessão e no step over ({@link ExecutionControl}). As saídas, o erro ou a
+ * interrupção vão para o {@link SessionConsole}. Terminate pede o fim à sessão ({@link DebugSession#abort()}): ela
+ * para antes do próximo statement, mesmo pausada, e faz rollback.
  */
 public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTarget {
 
     /** Abre a Sessão de debug, na thread da execução: a varredura dos Packages temporários já fala com o banco. */
     @FunctionalInterface
     public interface SessionOpener {
-        DebugSession open() throws SQLException;
+
+        /** @param hook o gancho da sessão, que pausa a execução */
+        DebugSession open(StatementHook hook) throws SQLException;
     }
 
     private static final ILog LOG = ILog.of(PsqlDebugTarget.class);
+    private static final int ASSIGN_TIMEOUT_SECONDS = 30;
+
+    /** Breakpoint ativo numa linha de um texto de Rotina. */
+    private record Location(SourceId source, int line) {
+    }
 
     private final ILaunch launch;
+    private final String dataSourceId;
     private final RoutineDefinition routine;
     private final List<Object> inputs;
     private final boolean commitOnFinish;
@@ -41,18 +63,22 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
     private final AutoCloseable connectionOwner;
     private final SessionConsole console;
     private final PsqlThread thread;
+    private final ExecutionControl control;
+    private volatile Map<Location, PsqlLineBreakpoint> breakpoints = Map.of();
     private volatile DebugSession session;
     private volatile boolean terminateRequested;
     private volatile boolean terminated;
 
     /**
+     * @param dataSourceId id da conexão do DBeaver, de cujas Rotinas são os breakpoints da sessão
      * @param inputs valores das entradas, na ordem; os que faltarem no fim usam o valor padrão
      * @param connectionOwner dono da conexão da sessão (o contexto isolado do DBeaver), fechado ao fim
      */
-    public PsqlDebugTarget(ILaunch launch, RoutineDefinition routine, List<Object> inputs, boolean commitOnFinish,
-            SessionOpener opener, AutoCloseable connectionOwner, SessionConsole console) {
+    public PsqlDebugTarget(ILaunch launch, String dataSourceId, RoutineDefinition routine, List<Object> inputs,
+            boolean commitOnFinish, SessionOpener opener, AutoCloseable connectionOwner, SessionConsole console) {
         super(null);
         this.launch = launch;
+        this.dataSourceId = dataSourceId;
         this.routine = routine;
         this.inputs = inputs;
         this.commitOnFinish = commitOnFinish;
@@ -60,12 +86,15 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
         this.connectionOwner = connectionOwner;
         this.console = console;
         this.thread = new PsqlThread(this);
+        this.control = new ExecutionControl(this::breakpointAt, thread::paused, this::frames);
     }
 
-    /** Anuncia o alvo e a thread e começa a execução. */
+    /** Anuncia o alvo e a thread, passa a acompanhar os breakpoints e começa a execução. */
     public void start() {
         fireCreationEvent();
         thread.started();
+        breakpointManager().addBreakpointListener(this);
+        indexBreakpoints();
         Thread execution = new Thread(this::execute, "Firebird PSQL debug: " + routine.displayName());
         execution.setDaemon(true);
         execution.start();
@@ -73,7 +102,7 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
 
     private void execute() {
         console.started(routine, inputs);
-        try (DebugSession opened = opener.open()) {
+        try (DebugSession opened = opener.open(control)) {
             session = opened;
             if (terminateRequested) {
                 opened.abort();
@@ -88,6 +117,7 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
             console.failed(e);
             LOG.error("Falha na Sessão de debug de " + routine.displayName(), e);
         } finally {
+            breakpointManager().removeBreakpointListener(this);
             closeConnectionOwner();
             terminated = true;
             thread.terminated();
@@ -103,10 +133,78 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
         }
     }
 
-    /** Pilha de frames da execução; só é consistente com a execução pausada. */
-    List<Frame> frames() {
+    ExecutionControl control() {
+        return control;
+    }
+
+    /** Pilha de frames da execução; só é consistente na thread dela. */
+    private List<Frame> frames() {
         DebugSession current = session;
         return current == null ? List.of() : current.frames();
+    }
+
+    /**
+     * Valor novo para uma variável, digitado com a execução pausada ({@link DebugSession#assign}). Roda na thread da
+     * execução, que é a dona da conexão, e espera o resultado.
+     *
+     * @throws DebugException com a mensagem do servidor, se o texto não serve para o tipo; a variável fica como estava
+     */
+    void assign(Frame frame, Variable variable, String text) throws DebugException {
+        DebugSession current = session;
+        if (current == null || !thread.isSuspended()) {
+            throw new DebugException(Status.error("A execução não está pausada."));
+        }
+        try {
+            control.whilePaused(() -> {
+                current.assign(frame, variable, text);
+                return null;
+            }).get(ASSIGN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            String reason = cause instanceof SQLException ? "o servidor não converteu o valor para "
+                    + variable.type().strip() + ": " + cause.getMessage() : cause.getMessage();
+            throw new DebugException(Status.error(variable.name() + " não foi alterada: " + reason, cause));
+        } catch (TimeoutException e) {
+            throw new DebugException(Status.error(variable.name() + ": o servidor não respondeu a tempo.", e));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new DebugException(Status.error(variable.name() + " não foi alterada.", e));
+        }
+    }
+
+    /** Texto de que são as posições do frame. */
+    SourceId sourceOf(Frame frame) {
+        return SourceId.of(dataSourceId, frame.sourceRoutine());
+    }
+
+    /** Na thread da execução, a cada statement. "Pular todos os breakpoints" da view Breakpoints vale aqui. */
+    private Object breakpointAt(RoutineDefinition source, int line) {
+        Map<Location, PsqlLineBreakpoint> index = breakpoints;
+        if (index.isEmpty() || !breakpointManager().isEnabled()) {
+            return null;
+        }
+        return index.get(new Location(SourceId.of(dataSourceId, source), line));
+    }
+
+    /** Refaz o índice dos breakpoints ativos da conexão, a cada mudança neles. */
+    private synchronized void indexBreakpoints() {
+        Map<Location, PsqlLineBreakpoint> index = new HashMap<>();
+        for (IBreakpoint breakpoint : breakpointManager().getBreakpoints(MODEL_ID)) {
+            if (breakpoint instanceof PsqlLineBreakpoint line && supportsBreakpoint(line)) {
+                try {
+                    if (line.isEnabled()) {
+                        index.putIfAbsent(new Location(line.source(), line.getLineNumber()), line);
+                    }
+                } catch (CoreException e) {
+                    // o marker foi removido no meio da leitura; o evento de remoção refaz o índice
+                }
+            }
+        }
+        breakpoints = Map.copyOf(index);
+    }
+
+    private static IBreakpointManager breakpointManager() {
+        return DebugPlugin.getDefault().getBreakpointManager();
     }
 
     @Override
@@ -141,7 +239,11 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
 
     @Override
     public boolean supportsBreakpoint(IBreakpoint breakpoint) {
-        return false;
+        if (!(breakpoint instanceof PsqlLineBreakpoint line)) {
+            return false;
+        }
+        SourceId source = line.source();
+        return source != null && dataSourceId.equals(source.dataSourceId());
     }
 
     @Override
@@ -161,16 +263,17 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
         if (current != null) {
             current.abort();
         }
+        control.release(); // solta a execução pausada, que então para no aborto
     }
 
     @Override
     public boolean canResume() {
-        return false;
+        return thread.canResume();
     }
 
     @Override
     public boolean canSuspend() {
-        return false;
+        return thread.canSuspend();
     }
 
     @Override
@@ -180,22 +283,33 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
 
     @Override
     public void resume() {
+        thread.resume();
     }
 
     @Override
     public void suspend() {
+        thread.suspend();
     }
 
     @Override
     public void breakpointAdded(IBreakpoint breakpoint) {
+        if (breakpoint instanceof PsqlLineBreakpoint) {
+            indexBreakpoints();
+        }
     }
 
     @Override
     public void breakpointRemoved(IBreakpoint breakpoint, IMarkerDelta delta) {
+        if (breakpoint instanceof PsqlLineBreakpoint) {
+            indexBreakpoints();
+        }
     }
 
     @Override
     public void breakpointChanged(IBreakpoint breakpoint, IMarkerDelta delta) {
+        if (breakpoint instanceof PsqlLineBreakpoint) {
+            indexBreakpoints();
+        }
     }
 
     @Override

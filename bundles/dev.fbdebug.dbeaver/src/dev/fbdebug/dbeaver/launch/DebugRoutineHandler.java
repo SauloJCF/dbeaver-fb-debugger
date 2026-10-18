@@ -9,7 +9,8 @@ import org.jkiss.dbeaver.ext.generic.model.GenericProcedure;
 
 /**
  * Comando "Depurar Rotina", no menu de contexto do navegador, no do editor de objeto e no menu "PSQL Debug". Fica
- * habilitado só com uma Rotina Firebird selecionada ou com o editor dela ativo.
+ * habilitado só com uma Rotina Firebird selecionada ou com o editor dela ativo. Com uma view que não é o navegador em
+ * foco (Breakpoints, Variables, console), vale o editor ativo, para o menu "PSQL Debug" funcionar na perspectiva Debug.
  */
 public final class DebugRoutineHandler extends AbstractHandler {
 

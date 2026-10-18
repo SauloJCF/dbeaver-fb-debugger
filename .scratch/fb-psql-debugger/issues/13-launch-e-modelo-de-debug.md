@@ -64,3 +64,34 @@ ADR: 0004
 ### 2026-10-17 — teste à mão (humano)
 
 O humano rodou o roteiro "Para conferir à mão" no DBeaver 26.2.2 desta máquina e informou que tudo passou ("aparentemente tudo ok"). Critérios de aceite marcados com base nisso. Fica valendo que o `debug.ui` 3.20 do target rodou sobre o `debug.core` 3.24 do 26.2.2 nesse roteiro; a escolha entre voltar ao 26.0.2 e refixar as versões continua aberta.
+
+### 2026-10-17 — "Depurar Rotina" com outra view em foco (agente)
+
+No teste de UI das issues 14 e 15, com a view Breakpoints em foco, "PSQL Debug > Depurar Rotina" ficou inativo. O comando olhava só a parte ativa: no editor de objeto, a Rotina dele; fora dele, a seleção, que numa view do debug não é uma Rotina. Na perspectiva Debug o foco costuma estar numa view do debug, então o menu "PSQL Debug" não servia para depurar de novo.
+
+**Decisão:** mudar. Numa parte que não é editor nem navegador do DBeaver (`INavigatorModelView`), sem objeto do banco selecionado, vale a Rotina do editor ativo, que continua definida com uma view em foco. No editor e no navegador nada muda: um navegador com uma tabela ou uma pasta selecionada continua sem Rotina. É a mesma ideia do "Launch the selected resource or active editor" do Eclipse.
+
+**Menu de contexto.** Com a regra nova, `checkEnabled` mostraria "Depurar Rotina" no menu de contexto das views do debug e do console. O `visibleWhen` passou a ser uma expressão com a regra antiga: editor de objeto ativo com Rotina Firebird (property tester `breakpointSource`), ou outra parte com uma `FireBirdProcedure` selecionada.
+
+**Para conferir à mão**
+1. Com o editor da `SP_SOMA_ESTOQUE` aberto, clicar na view Breakpoints (ou Variables, Debug, console) e usar "PSQL Debug > Depurar Rotina": abre o diálogo da Rotina do editor.
+2. Botão direito nas views Breakpoints, Variables, Debug e no console: "Depurar Rotina" não aparece.
+3. Navegador com uma procedure selecionada e o editor de outra procedure aberto: o menu de contexto e o menu "PSQL Debug" usam a selecionada. Com uma tabela selecionada: o item não aparece no menu de contexto e fica inativo no "PSQL Debug".
+4. Menu de contexto do editor da procedure: ver o comentário seguinte (o item nunca apareceu ali).
+
+### 2026-10-17 — "Depurar Rotina" no menu de contexto do editor (agente)
+
+No teste à mão, "Depurar Rotina" não apareceu no menu de contexto do editor da procedure, nem na pasta Source nem na Properties. Não é regressão: nunca apareceu ali, e o comentário da implementação ("no menu de contexto do navegador e do editor") estava errado.
+
+**Causa (conferida nos jars do 26.2.2).** O item entra em `popup:org.eclipse.ui.popup.any?after=generate`. O grupo `generate` é posto depois do grupo `tools`, que só o `NavigatorUtils` cria, nos menus do navegador. O menu do texto da pasta Source é o `#SQLEditorContext` do `SQLEditorBase`, com os grupos `sql.additions`, `sql.extras`, `group.copy` … `group.rest`, `additions` e `sql.preferences`. Sem o grupo, o Eclipse descarta a contribuição.
+
+**Correção.** Uma contribuição a mais em `popup:#SQLEditorContext?after=additions`, visível só com a entrada do editor ativo sendo procedure ou function Firebird (property tester `breakpointSource`). É o mesmo caminho do "Alternar Breakpoint" no `#SQLRulerContext`, que o `SQLEditorBase` registra do mesmo jeito. A pasta Properties fica sem o item; ali vale o menu "PSQL Debug".
+
+**Para conferir à mão**
+1. Editor da `SP_SOMA_ESTOQUE`, pasta Source, botão direito no texto: "Depurar Rotina" aparece perto do fim, antes de "Preferences", e abre o diálogo.
+2. Editor SQL comum (script) e editor de uma tabela: o item não aparece.
+3. Navegador: continua como antes.
+
+### 2026-10-17 — teste à mão do menu de contexto (humano)
+
+O humano instalou o zip `0.1.0.202610172355` no DBeaver 26.2.2 e informou que está "tudo certo agora": "Depurar Rotina" aparece no menu de contexto do texto da pasta Source e abre o diálogo.

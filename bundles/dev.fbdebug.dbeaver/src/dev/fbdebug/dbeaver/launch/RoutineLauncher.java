@@ -4,6 +4,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -39,12 +40,16 @@ import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
 import org.osgi.framework.FrameworkUtil;
 
 import dev.fbdebug.dbeaver.debug.PsqlDebugTarget;
+import dev.fbdebug.dbeaver.debug.PsqlSourceLocator;
 import dev.fbdebug.dbeaver.debug.SessionConsole;
+import dev.fbdebug.dbeaver.debug.SourceId;
+import dev.fbdebug.dbeaver.editor.EditorBreakpoints;
+import dev.fbdebug.dbeaver.editor.RoutineEditors;
 import dev.fbdebug.dbeaver.interp.CallPolicy;
 import dev.fbdebug.dbeaver.interp.DebugSession;
-import dev.fbdebug.dbeaver.interp.StatementHook;
 import dev.fbdebug.dbeaver.psql.PreCheck;
 import dev.fbdebug.dbeaver.psql.RoutineParser;
+import dev.fbdebug.dbeaver.psql.StatementLines;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 import dev.fbdebug.dbeaver.source.RoutineSourceLoader;
 
@@ -65,10 +70,11 @@ final class RoutineLauncher {
     /**
      * Fonte do banco já carregada, na conexão dedicada, e o que o Pré-check achou.
      *
+     * @param source o texto da Fonte do banco
      * @param routine a Rotina; {@code null} se o Pré-check a recusou
      */
-    private record Prepared(DBCExecutionContext context, Connection connection, RoutineDefinition routine,
-            List<PreCheck.Finding> findings) {
+    private record Prepared(DBCExecutionContext context, Connection connection, String source,
+            RoutineDefinition routine, List<PreCheck.Finding> findings) {
     }
 
     static void launch(Shell shell, GenericProcedure procedure) {
@@ -129,7 +135,7 @@ final class RoutineLauncher {
         if (dialog.open() != Window.OK) {
             return false;
         }
-        start(prepared, dialog.settings());
+        start(procedure, prepared, dialog.settings());
         return true;
     }
 
@@ -160,30 +166,63 @@ final class RoutineLauncher {
             List<PreCheck.Finding> findings = PreCheck.check(source);
             RoutineDefinition routine = findings.isEmpty() ? RoutineParser.parse(source) : null;
             monitor.done();
-            return new Prepared(context, connection, routine, findings);
+            return new Prepared(context, connection, source, routine, findings);
         } catch (SQLException | RuntimeException e) {
             closeQuietly(context);
             throw e;
         }
     }
 
-    private static void start(Prepared prepared, RoutineLaunchDialog.Settings settings) throws CoreException {
+    /**
+     * Acerta os breakpoints da Rotina pela Fonte do banco ({@link EditorBreakpoints#prepareLaunch}) e inicia a sessão.
+     * Os stack frames da Rotina mostram a linha no editor do objeto dela ({@link PsqlSourceLocator}).
+     */
+    private static void start(GenericProcedure procedure, Prepared prepared, RoutineLaunchDialog.Settings settings)
+            throws CoreException {
         RoutineDefinition routine = prepared.routine();
+        String dataSourceId = procedure.getDataSource().getContainer().getId();
+        SourceId source = SourceId.of(dataSourceId, routine);
+        EditorBreakpoints.prepareLaunch(source, routine);
         ILaunchManager manager = DebugPlugin.getDefault().getLaunchManager();
         ILaunchConfigurationType type = manager.getLaunchConfigurationType(LAUNCH_TYPE_ID);
         ILaunchConfigurationWorkingCopy configuration =
                 type.newInstance(null, manager.generateLaunchConfigurationName(routine.displayName()));
-        Launch launch = new Launch(configuration, ILaunchManager.DEBUG_MODE, null);
+        Launch launch = new Launch(configuration, ILaunchManager.DEBUG_MODE,
+                new PsqlSourceLocator(Map.of(source, procedure)));
         manager.addLaunch(launch);
         SessionConsole console = new SessionConsole(
                 settings.isolation() == DebugSession.Isolation.SNAPSHOT ? "SNAPSHOT" : "READ COMMITTED");
-        PsqlDebugTarget target = new PsqlDebugTarget(launch, routine, settings.inputs(), settings.commitOnFinish(),
-                () -> new DebugSession(prepared.connection(), settings.isolation(), settings.commitOnFinish(),
-                        CallPolicy.SERVER, StatementHook.NONE),
+        warnIfEditorDiffers(console, procedure, prepared);
+        PsqlDebugTarget target = new PsqlDebugTarget(launch, dataSourceId, routine, settings.inputs(),
+                settings.commitOnFinish(),
+                hook -> new DebugSession(prepared.connection(), settings.isolation(), settings.commitOnFinish(),
+                        CallPolicy.SERVER, hook),
                 prepared.context()::close, console);
         launch.addDebugTarget(target);
         showDebugPerspective();
         target.start();
+    }
+
+    /**
+     * As linhas dos breakpoints e da pausa são as da Fonte do banco montada pelo {@code RoutineSourceLoader}, que
+     * segue o cabeçalho que o DBeaver gera no editor (issue 09). Se, numa linha de statement, o texto do editor aberto
+     * não é o da Fonte do banco, o console avisa: a linha destacada e os breakpoints podem não bater.
+     */
+    private static void warnIfEditorDiffers(SessionConsole console, GenericProcedure procedure, Prepared prepared) {
+        String editorText = RoutineEditors.openText(procedure);
+        if (editorText == null) {
+            return;
+        }
+        String[] editor = editorText.split("\\R", -1);
+        String[] source = prepared.source().split("\\R", -1);
+        for (int line : StatementLines.of(prepared.routine())) {
+            if (line > editor.length || line > source.length
+                    || !editor[line - 1].strip().equals(source[line - 1].strip())) {
+                console.warn("Em " + procedure.getName() + ", a linha " + line + " do editor não é a da Fonte do banco "
+                        + "que o debugger executa: a linha destacada e os breakpoints podem não bater.");
+                return;
+            }
+        }
     }
 
     /** Editor do DBeaver aberto para a Rotina com alterações não salvas. */
@@ -219,17 +258,29 @@ final class RoutineLauncher {
         return section != null ? section : root.addNewSection(key);
     }
 
-    /** Antes de a sessão começar, para o debug.ui não perguntar se deve trocar de perspectiva. */
+    /**
+     * Antes de a sessão começar, para o debug.ui não perguntar se deve trocar de perspectiva. A view Debug fica
+     * visível mesmo se o usuário a fechou: na pausa, é ela que seleciona o frame do topo, e sem frame selecionado o
+     * debug.ui não destaca a linha nem enche a view Variables. O debug.ui só a reabre na pausa para um tipo de launch
+     * com perspectiva, e o nosso não tem. {@code VIEW_VISIBLE}, como o debug.ui, para não tirar o foco do editor.
+     */
     private static void showDebugPerspective() {
         IWorkbench workbench = PlatformUI.getWorkbench();
         IWorkbenchWindow window = workbench.getActiveWorkbenchWindow();
         if (window == null && workbench.getWorkbenchWindowCount() > 0) {
             window = workbench.getWorkbenchWindows()[0];
         }
+        IWorkbenchPage page;
         try {
-            workbench.showPerspective(IDebugUIConstants.ID_DEBUG_PERSPECTIVE, window);
+            page = workbench.showPerspective(IDebugUIConstants.ID_DEBUG_PERSPECTIVE, window);
         } catch (WorkbenchException e) {
             LOG.error("Falha ao abrir a perspectiva Debug", e);
+            return;
+        }
+        try {
+            page.showView(IDebugUIConstants.ID_DEBUG_VIEW, null, IWorkbenchPage.VIEW_VISIBLE);
+        } catch (PartInitException e) {
+            LOG.error("Falha ao abrir a view Debug", e);
         }
     }
 }

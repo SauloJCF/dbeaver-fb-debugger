@@ -94,6 +94,14 @@ public final class Frame {
         return parent;
     }
 
+    /**
+     * Rotina de cujo texto são as posições do frame: numa sub-rotina, a que a declara (ver {@link #parent()}); nos
+     * outros frames, a própria Rotina.
+     */
+    public RoutineDefinition sourceRoutine() {
+        return parent != null ? parent.routine : routine;
+    }
+
     /** Frame da Rotina que declara as sub-rotinas que uma chamada sem package daqui alcança. */
     Frame subroutineOwner() {
         return parent != null ? parent : this;
