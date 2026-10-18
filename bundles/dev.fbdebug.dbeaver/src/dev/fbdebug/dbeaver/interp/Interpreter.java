@@ -7,13 +7,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
+import java.util.NavigableSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 
 import dev.fbdebug.dbeaver.psql.CallSites;
-import dev.fbdebug.dbeaver.psql.PreCheck;
-import dev.fbdebug.dbeaver.psql.PsqlSyntaxException;
 import dev.fbdebug.dbeaver.psql.SubroutineScopes;
 import dev.fbdebug.dbeaver.psql.ast.Assignment;
 import dev.fbdebug.dbeaver.psql.ast.Block;
@@ -39,7 +39,6 @@ import dev.fbdebug.dbeaver.psql.ast.ProcedureSource;
 import dev.fbdebug.dbeaver.psql.ast.Raise;
 import dev.fbdebug.dbeaver.psql.ast.Return;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
-import dev.fbdebug.dbeaver.psql.ast.SourcePosition;
 import dev.fbdebug.dbeaver.psql.ast.Statement;
 import dev.fbdebug.dbeaver.psql.ast.Subroutine;
 import dev.fbdebug.dbeaver.psql.ast.Suspend;
@@ -62,6 +61,7 @@ public final class Interpreter {
     private final DmlExecutor dml;
     private final ExceptionRaiser exceptions;
     private final RoutineCatalog catalog;
+    private final CallTargets targets;
     private final CallPolicy policy;
     private final TemporaryPackages packages;
     private final StatementHook hook;
@@ -93,6 +93,7 @@ public final class Interpreter {
         this.dml = new DmlExecutor(connection, evaluator);
         this.exceptions = new ExceptionRaiser(connection, evaluator);
         this.catalog = catalog;
+        this.targets = new CallTargets(catalog);
         this.policy = policy;
         this.packages = packages;
         this.hook = hook;
@@ -492,11 +493,12 @@ public final class Interpreter {
         DmlStatement select = loop.select();
         refuse(select.unsupported());
         ProcedureSource source = loop.procedure();
-        Callee callee = source == null ? null
-                : callee(CallSites.Form.FOR_SELECT, RoutineDefinition.Kind.PROCEDURE, source.packageName(),
-                        source.name(), source.position(), frame);
+        CallSites.CallSite site = source == null ? null
+                : new CallSites.CallSite(CallSites.Form.FOR_SELECT, source.packageName(), source.name(),
+                        source.position());
+        Callee callee = site == null ? null : callee(site, RoutineDefinition.Kind.PROCEDURE, frame);
         if (callee != null) {
-            return executeLoop(loop, callee, frame);
+            return executeLoop(loop, site, callee, frame);
         }
         SavepointStack.Level level = frame.savepoints().pushIfChanged();
         Jump result = null;
@@ -533,8 +535,13 @@ public final class Interpreter {
      * do laço roda com ela parada ali, fora da pilha de frames e sem savepoint aberto; a linha seguinte a faz
      * continuar. Sair do laço, por desvio ou erro de quem chama, abandona a procedure parada, como o motor faz ao
      * fechar o cursor. O que ela altera vai para o nível de quem chama, como num cursor do servidor.
+     * <p>
+     * Uma procedure que a camada de debug não acompanha pode passar a ser acompanhada numa volta seguinte, antes de
+     * continuar depois do {@code SUSPEND}: com o step into na linha do laço, ou com um breakpoint posto nela depois do
+     * começo do laço ({@link #follow}).
      */
-    private Jump executeLoop(ForSelect loop, Callee callee, Frame frame) throws SQLException {
+    private Jump executeLoop(ForSelect loop, CallSites.CallSite site, Callee callee, Frame frame)
+            throws SQLException {
         ProcedureSource source = loop.procedure();
         RoutineDefinition procedure = callee.routine();
         List<Integer> columns = columns(source, procedure);
@@ -571,6 +578,7 @@ public final class Interpreter {
                             throw new LoopExit(owner, null, null);
                         }
                         nextIteration(loop, frame); // com a procedure ainda fora da pilha
+                        follow(site, callee, frame, paused);
                         frame.savepoints().beforeChange(); // a procedure continua e pode alterar dados
                     } catch (SQLException e) {
                         throw new LoopExit(owner, null, e);
@@ -595,6 +603,25 @@ public final class Interpreter {
         }
         frame.savepoints().release(level);
         return result;
+    }
+
+    /**
+     * Numa volta seguinte do {@code FOR SELECT} sobre procedure interpretada, antes de ela continuar: se a camada de
+     * debug ainda não a acompanha, a política pode passar a acompanhá-la (step into na linha do laço, ou um breakpoint
+     * ao alcance dela).
+     *
+     * @param paused frames tirados da pilha durante o corpo do laço; o último é o da procedure
+     */
+    private void follow(CallSites.CallSite site, Callee callee, Frame caller, List<Frame> paused)
+            throws SQLException {
+        Frame procedure = paused.isEmpty() ? null : paused.get(paused.size() - 1);
+        if (procedure == null || procedure.steppedInto()) {
+            return;
+        }
+        RoutineDefinition text = callee.parent() != null ? callee.parent().routine() : callee.routine();
+        if (policy.stepInto(site, caller) || policy.stopsInside(() -> targets.reach(callee.routine(), text))) {
+            procedure.follow();
+        }
     }
 
     /** Uma linha do {@code FOR SELECT} sobre procedure interpretada: alvos do {@code INTO} e corpo do laço. */
@@ -675,8 +702,8 @@ public final class Interpreter {
      * saber se ela alterou algo, e conta como alteração.
      */
     private void executeProcedure(ExecuteProcedure call, Frame frame) throws SQLException {
-        Callee callee = callee(CallSites.Form.EXECUTE_PROCEDURE, RoutineDefinition.Kind.PROCEDURE,
-                call.packageName(), call.name(), call.position(), frame);
+        Callee callee = callee(new CallSites.CallSite(CallSites.Form.EXECUTE_PROCEDURE, call.packageName(),
+                call.name(), call.position()), RoutineDefinition.Kind.PROCEDURE, frame);
         frame.savepoints().beforeChange();
         List<Object> outputs;
         if (callee == null) {
@@ -699,8 +726,8 @@ public final class Interpreter {
         Variable target = frame.get(assignment.target());
         FunctionCall call = assignment.call();
         Callee callee = call == null ? null
-                : callee(CallSites.Form.ASSIGNMENT, RoutineDefinition.Kind.FUNCTION, call.packageName(),
-                        call.name(), call.position(), frame);
+                : callee(new CallSites.CallSite(CallSites.Form.ASSIGNMENT, call.packageName(), call.name(),
+                        call.position()), RoutineDefinition.Kind.FUNCTION, frame);
         if (callee == null) {
             assign(target, assignment.value(), frame);
             return;
@@ -724,7 +751,7 @@ public final class Interpreter {
     /**
      * Rotina a interpretar.
      *
-     * @param steppedInto a política escolheu o step into (ver {@link Frame#steppedInto()})
+     * @param steppedInto a camada de debug acompanha a Rotina (ver {@link Frame#steppedInto()})
      * @param parent numa sub-rotina, o frame da Rotina que a declara (ver {@link Frame#parent()}); senão {@code null}
      * @param parentVariables variáveis de {@code parent} que a sub-rotina enxerga
      */
@@ -740,26 +767,40 @@ public final class Interpreter {
      * servidor (exceto no {@code FOR SELECT} e numa rotina privada da package de quem chama, ver
      * {@link CallPolicy}), quando o nome não é de Rotina PSQL com Fonte do banco, ou quando a Fonte dela tem
      * construção que o Interpretador não executa (nesse caso a Rotina roda inteira no servidor, que é o gabarito).
-     * Um nome sem package é primeiro o de uma sub-rotina ({@link #subroutineCallee}).
+     * Um nome sem package é primeiro o de uma sub-rotina ({@link #subroutineCallee}). Fora do step into, a Rotina é
+     * acompanhada pela camada de debug se ela pode parar dentro da chamada ({@link CallPolicy#stopsInside}).
+     *
+     * @param kind {@link RoutineDefinition.Kind#PROCEDURE} ou {@link RoutineDefinition.Kind#FUNCTION}
      */
-    private Callee callee(CallSites.Form form, RoutineDefinition.Kind kind, String packageName, String name,
-            SourcePosition position, Frame caller) throws SQLException {
-        boolean steppedInto = policy.stepInto(new CallSites.CallSite(form, packageName, name, position), caller);
-        Subroutine subroutine = packageName == null ? caller.subroutine(kind, name) : null;
+    private Callee callee(CallSites.CallSite site, RoutineDefinition.Kind kind, Frame caller) throws SQLException {
+        boolean steppedInto = policy.stepInto(site, caller);
+        Subroutine subroutine = site.packageName() == null ? caller.subroutine(kind, site.name()) : null;
         if (subroutine != null) {
-            return subroutineCallee(subroutine, form, steppedInto, caller);
+            RoutineDefinition text = caller.subroutineOwner().routine();
+            steppedInto = steppedInto || policy.stopsInside(() -> targets.reach(subroutine.routine(), text));
+            return subroutineCallee(subroutine, site.form(), steppedInto, caller);
         }
-        if (!steppedInto && form != CallSites.Form.FOR_SELECT && !isPrivate(packageName, name, caller)) {
+        String callerPackage = caller.routine().packageName();
+        if (!steppedInto && site.form() != CallSites.Form.FOR_SELECT
+                && !isPrivate(site.packageName(), site.name(), caller)) {
+            // No step over, a chamada vai ao servidor, a menos que a execução possa parar dentro dela.
+            if (!policy.stopsInside(() -> reach(targets.interpretable(kind, callerPackage, site.packageName(),
+                    site.name())))) {
+                return null;
+            }
+            steppedInto = true;
+        }
+        RoutineDefinition routine = targets.interpretable(kind, callerPackage, site.packageName(), site.name());
+        if (routine == null) {
             return null;
         }
-        RoutineDefinition routine;
-        try {
-            routine = catalog.find(kind, caller.routine().packageName(), packageName, name).orElse(null);
-        } catch (PsqlSyntaxException e) {
-            return null;
-        }
-        return routine == null || !PreCheck.scan(routine).isEmpty() ? null
-                : new Callee(routine, steppedInto, null, Set.of());
+        steppedInto = steppedInto || policy.stopsInside(() -> targets.reach(routine, routine));
+        return new Callee(routine, steppedInto, null, Set.of());
+    }
+
+    /** Linhas que a chamada pode executar; vazio se a Rotina não é interpretada ({@code null}). */
+    private Map<RoutineDefinition, NavigableSet<Integer>> reach(RoutineDefinition routine) throws SQLException {
+        return routine == null ? Map.of() : targets.reach(routine, routine);
     }
 
     /**

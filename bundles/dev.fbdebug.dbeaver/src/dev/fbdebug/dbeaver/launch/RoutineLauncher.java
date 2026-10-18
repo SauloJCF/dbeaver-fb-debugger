@@ -4,7 +4,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -45,7 +44,6 @@ import dev.fbdebug.dbeaver.debug.SessionConsole;
 import dev.fbdebug.dbeaver.debug.SourceId;
 import dev.fbdebug.dbeaver.editor.EditorBreakpoints;
 import dev.fbdebug.dbeaver.editor.RoutineEditors;
-import dev.fbdebug.dbeaver.interp.CallPolicy;
 import dev.fbdebug.dbeaver.interp.DebugSession;
 import dev.fbdebug.dbeaver.psql.PreCheck;
 import dev.fbdebug.dbeaver.psql.RoutineParser;
@@ -174,8 +172,10 @@ final class RoutineLauncher {
     }
 
     /**
-     * Acerta os breakpoints da Rotina pela Fonte do banco ({@link EditorBreakpoints#prepareLaunch}) e inicia a sessão.
-     * Os stack frames da Rotina mostram a linha no editor do objeto dela ({@link PsqlSourceLocator}).
+     * Acerta os breakpoints pela Fonte do banco ({@link EditorBreakpoints#prepareLaunch}) e inicia a sessão. Os stack
+     * frames mostram a linha no editor do objeto da Rotina deles: o da Rotina do launch ou, depois de um step into, o
+     * da Rotina chamada, achado no DBeaver pelo nome ({@link PsqlSourceLocator}). O controle da sessão é também a
+     * política das chamadas: step into na chamada do statement em que a execução parou, ou breakpoint ao alcance dela.
      */
     private static void start(GenericProcedure procedure, Prepared prepared, RoutineLaunchDialog.Settings settings)
             throws CoreException {
@@ -188,15 +188,15 @@ final class RoutineLauncher {
         ILaunchConfigurationWorkingCopy configuration =
                 type.newInstance(null, manager.generateLaunchConfigurationName(routine.displayName()));
         Launch launch = new Launch(configuration, ILaunchManager.DEBUG_MODE,
-                new PsqlSourceLocator(Map.of(source, procedure)));
+                new PsqlSourceLocator(text -> RoutineEditors.routine(procedure, text)));
         manager.addLaunch(launch);
         SessionConsole console = new SessionConsole(
                 settings.isolation() == DebugSession.Isolation.SNAPSHOT ? "SNAPSHOT" : "READ COMMITTED");
         warnIfEditorDiffers(console, procedure, prepared);
         PsqlDebugTarget target = new PsqlDebugTarget(launch, dataSourceId, routine, settings.inputs(),
                 settings.commitOnFinish(),
-                hook -> new DebugSession(prepared.connection(), settings.isolation(), settings.commitOnFinish(),
-                        CallPolicy.SERVER, hook),
+                control -> new DebugSession(prepared.connection(), settings.isolation(), settings.commitOnFinish(),
+                        control, control),
                 prepared.context()::close, console);
         launch.addDebugTarget(target);
         showDebugPerspective();

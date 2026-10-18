@@ -1,7 +1,10 @@
 package dev.fbdebug.dbeaver.editor;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 
+import org.eclipse.core.runtime.ILog;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.source.IAnnotationModel;
 import org.eclipse.swt.widgets.Display;
@@ -17,10 +20,12 @@ import org.eclipse.ui.part.MultiPageEditorSite;
 import org.eclipse.ui.texteditor.IDocumentProvider;
 import org.eclipse.ui.texteditor.IEditorStatusLine;
 import org.eclipse.ui.texteditor.ITextEditor;
+import org.jkiss.dbeaver.DBException;
 import org.jkiss.dbeaver.ext.generic.model.GenericProcedure;
 import org.jkiss.dbeaver.model.DBPDataSourceContainer;
 import org.jkiss.dbeaver.model.navigator.DBNDatabaseNode;
 import org.jkiss.dbeaver.model.navigator.DBNUtils;
+import org.jkiss.dbeaver.model.runtime.VoidProgressMonitor;
 import org.jkiss.dbeaver.model.struct.DBSObject;
 import org.jkiss.dbeaver.model.struct.rdb.DBSProcedureType;
 import org.jkiss.dbeaver.ui.UIUtils;
@@ -33,9 +38,11 @@ import dev.fbdebug.dbeaver.debug.SourceId;
 /**
  * Editor do objeto do DBeaver de uma Rotina Firebird e o editor de texto da pasta Source dele, onde ficam os
  * breakpoints e a linha da pausa. O plugin do Firebird do DBeaver não exporta as classes dele: a Rotina é a procedure
- * do plugin genérico, e a conexão Firebird é reconhecida pelo provedor do driver. Só na thread de UI.
+ * do plugin genérico, e a conexão Firebird é reconhecida pelo provedor do driver. Só na thread de UI, fora onde dito.
  */
 public final class RoutineEditors {
+
+    private static final ILog LOG = ILog.of(RoutineEditors.class);
 
     /** Provedor de conexão do plugin {@code org.jkiss.dbeaver.ext.firebird}. */
     private static final String FIREBIRD_PROVIDER = "jaybird";
@@ -67,6 +74,41 @@ public final class RoutineEditors {
         SourceId.Kind kind = procedure.getProcedureType() == DBSProcedureType.FUNCTION ? SourceId.Kind.FUNCTION
                 : SourceId.Kind.PROCEDURE;
         return new SourceId(dataSourceId, kind, procedure.getName());
+    }
+
+    /**
+     * Objeto do DBeaver de um texto de Rotina da conexão de {@code root}: a própria {@code root}, ou uma procedure ou
+     * function fora de package do mesmo container, achada pelo nome e pelo tipo. Rotina de package não tem objeto: o
+     * DBeaver não mostra as packages do Firebird. De qualquer thread: o debug.ui chama fora da thread de UI, e a busca
+     * pode ler os metadados do DBeaver.
+     *
+     * @return {@code null} se não há objeto para o texto
+     */
+    public static DBSObject routine(GenericProcedure root, SourceId source) {
+        if (source.equals(sourceOf(root))) {
+            return root;
+        }
+        DBSProcedureType type = switch (source.kind()) {
+            case PROCEDURE -> DBSProcedureType.PROCEDURE;
+            case FUNCTION -> DBSProcedureType.FUNCTION;
+            case PACKAGE, TRIGGER, EXECUTE_BLOCK -> null;
+        };
+        if (type == null || !source.dataSourceId().equals(root.getDataSource().getContainer().getId())) {
+            return null;
+        }
+        try {
+            Collection<? extends GenericProcedure> procedures =
+                    root.getContainer().getProcedures(new VoidProgressMonitor());
+            for (GenericProcedure procedure : procedures == null ? List.<GenericProcedure>of() : procedures) {
+                if (procedure.getName().equals(source.name()) && procedure.getProcedureType() == type
+                        && procedure.getPackage() == null) {
+                    return procedure;
+                }
+            }
+        } catch (DBException e) {
+            LOG.warn("Falha ao procurar " + source.name() + " no DBeaver", e);
+        }
+        return null;
     }
 
     /** @return o texto da Rotina do editor do objeto, ou {@code null} */

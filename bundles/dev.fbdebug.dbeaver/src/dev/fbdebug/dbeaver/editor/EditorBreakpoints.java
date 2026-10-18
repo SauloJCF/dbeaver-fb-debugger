@@ -206,9 +206,10 @@ public final class EditorBreakpoints {
     }
 
     /**
-     * Antes do launch da Rotina, acerta os breakpoints dela: a linha de cada um passa a ser a da marca no ruler, que
-     * acompanhou o texto editado e salvo desde que ele foi posto; e um breakpoint numa linha sem statement da Fonte do
-     * banco vai para o próximo statement (sem nenhum depois, fica onde está e não para).
+     * Antes do launch da Rotina, acerta os breakpoints: a linha de cada um passa a ser a da marca no ruler, que
+     * acompanhou o texto editado e salvo desde que ele foi posto. Nos da Rotina, um breakpoint numa linha sem
+     * statement da Fonte do banco vai para o próximo statement (sem nenhum depois, fica onde está e não para). Os das
+     * outras Rotinas, que a execução pode chamar, só seguem a marca: a Fonte do banco delas só é lida na chamada.
      *
      * @param routine a Rotina, da Fonte do banco
      */
@@ -217,11 +218,11 @@ public final class EditorBreakpoints {
         for (Map.Entry<PsqlLineBreakpoint, Placement> entry : PLACEMENTS.entrySet()) {
             PsqlLineBreakpoint breakpoint = entry.getKey();
             Placement placement = entry.getValue();
-            if (!source.equals(breakpoint.source())) {
-                continue;
-            }
             int current = currentLine(breakpoint, placement);
-            Integer statement = lines.ceiling(current);
+            if (current < 1) {
+                continue; // o marker foi removido
+            }
+            Integer statement = source.equals(breakpoint.source()) ? lines.ceiling(current) : null;
             int line = statement == null ? current : statement;
             try {
                 if (line != breakpoint.getLineNumber()) {

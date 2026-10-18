@@ -181,6 +181,36 @@
                 name="Firebird PSQL breakpoint"/>
     </extension>
 
+    <!-- ===== Step into e step return (issue 17) ===== -->
+
+    <!-- Aviso "executado no servidor" no nome de cada chamada sem step into do texto da Rotina, durante a Sessão de
+         debug (ServerCallAnnotations). Sem marker: a anotação é posta e tirada à mão, como a marca do breakpoint. -->
+    <extension point="org.eclipse.ui.editors.annotationTypes">
+        <type name="dev.fbdebug.dbeaver.serverCall"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.editors.markerAnnotationSpecification">
+        <specification
+                annotationType="dev.fbdebug.dbeaver.serverCall"
+                label="Executado no servidor (Firebird PSQL Debugger)"
+                symbolicIcon="info"
+                presentationLayer="4"
+                colorPreferenceKey="dev.fbdebug.dbeaver.serverCall.color"
+                colorPreferenceValue="130,160,190"
+                textPreferenceKey="dev.fbdebug.dbeaver.serverCall.text"
+                textPreferenceValue="true"
+                textStylePreferenceKey="dev.fbdebug.dbeaver.serverCall.textStyle"
+                textStylePreferenceValue="DASHED_BOX"
+                highlightPreferenceKey="dev.fbdebug.dbeaver.serverCall.highlight"
+                highlightPreferenceValue="false"
+                overviewRulerPreferenceKey="dev.fbdebug.dbeaver.serverCall.overviewRuler"
+                overviewRulerPreferenceValue="true"
+                verticalRulerPreferenceKey="dev.fbdebug.dbeaver.serverCall.verticalRuler"
+                verticalRulerPreferenceValue="true"
+                contributesToHeader="false"
+                includeOnPreferencePage="true"/>
+    </extension>
+
     <!-- Duplo-clique no ruler: o editor de texto da pasta Source do editor de procedure (site "generic.source.view")
          procura a ação RulerDoubleClick nas contribuições com o id do site dele, na hora do clique. A ação roda o
          comando de definitionId; a classe só valeria para um editor de primeiro nível com esse id, que não existe. -->

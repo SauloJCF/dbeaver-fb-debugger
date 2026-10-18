@@ -61,8 +61,8 @@ Com a execução parada, o painel de variáveis mostra `ID`, `PRECO`, `TOTAL` e 
 
 - O breakpoint é posto no texto da pasta Source do editor da Rotina: duplo-clique no ruler, "Alternar Breakpoint" no menu do ruler ou Ctrl+Shift+B na linha do cursor. Numa linha sem statement (`BEGIN`, `END`, comentário), ele vai para o próximo statement. Sem nenhum depois, é recusado.
 - O breakpoint não é persistente. Ele some quando o editor fecha e não volta depois de reiniciar o DBeaver.
-- A execução para antes do statement. Num laço, para também a cada volta, na linha do `WHILE` ou do `FOR SELECT`, antes de avaliar a condição ou de buscar a próxima linha. O step over (F6) vai ao próximo statement da mesma Rotina, ou de quem a chamou quando ela termina. O resume é o F8.
-- A camada de debug só para nas Rotinas que acompanha. Uma procedure de `FOR SELECT` interpretada no step over não para, nem com breakpoint.
+- A execução para antes do statement. Num laço, para também a cada volta, na linha do `WHILE` ou do `FOR SELECT`, antes de avaliar a condição ou de buscar a próxima linha. O step over (F6) vai ao próximo statement da mesma Rotina, ou de quem a chamou quando ela termina. O resume é o F8. Step into (F5) e step return (F7) estão em "Step into em outra Rotina", abaixo.
+- A camada de debug só para nas Rotinas que acompanha: a raiz, as alcançadas por step into e as que têm um breakpoint ao alcance da chamada (abaixo). Uma procedure de `FOR SELECT` interpretada no step over, sem breakpoint, não para.
 - O valor digitado na view Variables vai ao servidor como texto (`CAST(CAST(? AS VARCHAR(...)) AS <tipo>)`). Por isso vale o que um `CAST` aceita, como `'17.10.2026'` numa `DATE`. `NULL`, sem aspas, é o valor nulo. Num erro de conversão, a variável fica como estava.
 - Um watch vai ao servidor como `SELECT (<expr>) FROM RDB$DATABASE`, com as variáveis do frame selecionado na view Debug. Ele é avaliado de novo a cada pausa e quando outro frame é selecionado. Um erro do servidor fica no lugar do valor (abra o watch para ver a mensagem), e a sessão continua pausada.
 - O texto do watch precisa ser uma expressão só: com `;`, com `,` fora de parênteses ou com parênteses desbalanceados, ele é recusado antes de ir ao servidor.
@@ -82,8 +82,25 @@ X = F_DESCONTO(:VALOR);                -- Step into elegível: a chamada é a ex
 INSERT INTO LOG SELECT F_DESCONTO(1) FROM RDB$DATABASE;  -- Executado no servidor
 ```
 
-- Nas duas primeiras linhas, o step into abre a outra Rotina, que aparece como um novo frame na pilha.
-- Na terceira, a chamada está dentro de uma Fatia DML e roda inteira no servidor, sem step into. A linha mostra o aviso "Executado no servidor".
+- Nas duas primeiras linhas, o step into (F5) abre o editor da outra Rotina (a Fonte do banco, na pasta Source) e para no primeiro statement dela. Ela aparece como um novo frame na pilha da view Debug.
+- Na terceira, a chamada está dentro de uma Fatia DML e roda inteira no servidor, sem step into. O F5 ali vai ao próximo statement, como o step over. Durante a sessão, o nome chamado ganha uma moldura tracejada no editor e o ícone de informação no ruler. Na view Debug, o frame parado nessa linha diz `(executado no servidor: F_DESCONTO)`. O hover do editor SQL do DBeaver não mostra o texto da anotação, porque só mostra as anotações dele.
+- O mesmo aviso vale para uma chamada elegível a uma Rotina que o Interpretador não executa, porque a Fonte não parseia ou o Pré-check a recusa. Ela vai inteira ao servidor. Uma função interna (`UPPER(...)`), uma tabela depois de `FROM` ou uma Rotina externa não têm aviso.
+
+### Step into, step return e a pilha
+
+- O step into entra na chamada do statement em que a execução parou. Num statement sem chamada que dê para interpretar, ele vai ao próximo statement, como o step over.
+- O step return (F7) roda o resto do frame e para no próximo statement de quem o chamou, que é a linha seguinte à chamada. Na Rotina raiz ele fica desabilitado, como no Eclipse.
+- Os steps valem para o frame selecionado na view Debug, como no Eclipse. Com o frame de quem chamou selecionado, o F6 roda até o próximo statement desse frame e o F7 até o de quem o chamou. O F5 só vale no frame de cima.
+- Selecionar outro frame na view Debug mostra a linha dele no editor da Rotina dele, e as variáveis e os watches passam a ser os desse frame.
+- Uma sub-rotina abre no mesmo editor da Rotina que a declara. Na view Debug, o frame aparece como `ARREDONDA (em SP_FATURA_PEDIDO) linha N`.
+- Num `FOR SELECT … FROM sp(...)`, o step into na linha do laço entra na procedure. Na primeira volta ela começa, e nas seguintes continua depois do `SUSPEND`. O step over no `SUSPEND` vai ao corpo do laço.
+- Uma rotina de package não tem editor no DBeaver, que não mostra as packages do Firebird. O frame dela aparece na pilha, com variáveis, mas o debug.ui mostra o editor de fonte não encontrada.
+
+### Breakpoints em outra Rotina
+
+- Um breakpoint vale em qualquer Rotina da conexão cujo editor esteja aberto, e não só na do launch. Fechar o editor tira os breakpoints dela, porque eles não são persistentes.
+- No step over e no resume, um `EXECUTE PROCEDURE` ou um `x = F(...)` vai ao servidor, exceto quando há um breakpoint numa Rotina que a chamada alcança, direto ou por outras chamadas elegíveis. Aí a Rotina é interpretada, e a execução para no breakpoint. Fora dele, o step over não para dentro da chamada. A procedure de um `FOR SELECT` é sempre interpretada (issue 10), mas a camada de debug só a acompanha com breakpoint ao alcance, inclusive um posto nela durante o laço, que vale a partir da volta seguinte.
+- Para saber o que uma chamada alcança, com algum breakpoint ativo, a primeira chamada a cada Rotina lê a Fonte do banco das Rotinas que ela chama, uma vez por sessão. Uma chamada dentro de expressão ou de Fatia DML roda no servidor e não para em breakpoint.
 
 ## Triggers
 
@@ -113,9 +130,11 @@ Mapa feito a partir dos nomes dos arquivos, dos ADRs e do glossário. Conferir n
 |---|---|
 | Parser, AST e Pré-check | `psql/RoutineParser`, `AstBuilder`, `PreCheck`, `psql/ast/*` |
 | Interpretador | `interp/Interpreter`, `Frame`, `ExpressionEvaluator`, `DmlExecutor` |
-| Sessão de debug e pausa (breakpoint, step over, tarefas na pausa) | `interp/DebugSession`, `StatementHook`, `ExecutionControl`; linhas com statement em `psql/StatementLines` |
+| Sessão de debug e pausa (breakpoint, steps, tarefas na pausa) | `interp/DebugSession`, `StatementHook`, `ExecutionControl`; linhas com statement em `psql/StatementLines` |
+| Step into × servidor em cada chamada elegível | `interp/CallPolicy` (o `ExecutionControl` é a da sessão), `CallTargets` (Rotina chamada e linhas que a chamada alcança), `psql/CallSites` |
+| Aviso "executado no servidor" | `interp/ServerCalls`, `debug/ServerCallWarnings`, `editor/ServerCallAnnotations`; o tipo de anotação no `plugin.xml` |
 | Modelo de debug do Eclipse (pilha, variáveis, breakpoints, watches) | `debug/PsqlDebugTarget`, `PsqlThread`, `PsqlStackFrame`, `PsqlVariable`, `PsqlLineBreakpoint`, `PsqlSourceLocator`, `PsqlWatchExpressionDelegate` |
-| Editor do DBeaver (ruler, linha da pausa) | `editor/EditorBreakpoints`, `RoutineEditors`, `PsqlModelPresentation`, handlers do `plugin.xml` |
+| Editor do DBeaver (ruler, linha da pausa, objeto de uma Rotina chamada) | `editor/EditorBreakpoints`, `RoutineEditors`, `PsqlModelPresentation`, handlers do `plugin.xml` |
 | Launch | `launch/DebugRoutineHandler`, `RoutineLaunchDialog`, `RoutineLauncher` |
 | Fonte da Rotina | `source/RoutineSourceLoader` |
 | Packages temporários (sub-rotinas) | `interp/TemporaryPackages` |

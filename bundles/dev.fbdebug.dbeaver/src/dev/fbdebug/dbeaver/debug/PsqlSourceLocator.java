@@ -1,25 +1,38 @@
 package dev.fbdebug.dbeaver.debug;
 
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 import org.eclipse.debug.core.model.ISourceLocator;
 import org.eclipse.debug.core.model.IStackFrame;
 
 /**
  * Objeto do DBeaver de cada stack frame, que a model presentation ({@code PsqlModelPresentation}) abre no editor
- * para destacar a linha. Um frame de Rotina sem objeto conhecido não tem fonte.
+ * para destacar a linha: o da Rotina raiz e os das Rotinas alcançadas por step into, achados na primeira vez que um
+ * frame do texto delas aparece. Um frame de Rotina sem objeto conhecido (rotina de package, que o DBeaver não mostra
+ * no Firebird) não tem fonte, e o debug.ui mostra o editor de "fonte não encontrada".
  */
 public final class PsqlSourceLocator implements ISourceLocator {
 
-    private final Map<SourceId, Object> sources;
+    private final Function<SourceId, Object> resolver;
+    private final Map<SourceId, Optional<Object>> sources = new ConcurrentHashMap<>();
 
-    /** @param sources objeto do DBeaver de cada texto de Rotina */
-    public PsqlSourceLocator(Map<SourceId, Object> sources) {
-        this.sources = Map.copyOf(sources);
+    /**
+     * @param resolver objeto do DBeaver de um texto de Rotina, ou {@code null} se não há; chamado fora da thread de UI,
+     *            uma vez por texto
+     */
+    public PsqlSourceLocator(Function<SourceId, Object> resolver) {
+        this.resolver = resolver;
     }
 
     @Override
     public Object getSourceElement(IStackFrame stackFrame) {
-        return stackFrame instanceof PsqlStackFrame frame ? sources.get(frame.source()) : null;
+        if (!(stackFrame instanceof PsqlStackFrame frame)) {
+            return null;
+        }
+        return sources.computeIfAbsent(frame.source(), source -> Optional.ofNullable(resolver.apply(source)))
+                .orElse(null);
     }
 }

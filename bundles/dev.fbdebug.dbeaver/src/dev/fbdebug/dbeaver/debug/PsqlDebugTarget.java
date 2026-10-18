@@ -23,10 +23,12 @@ import org.eclipse.debug.core.model.IMemoryBlock;
 import org.eclipse.debug.core.model.IProcess;
 import org.eclipse.debug.core.model.IThread;
 
+import dev.fbdebug.dbeaver.interp.CallPolicy;
 import dev.fbdebug.dbeaver.interp.DebugSession;
 import dev.fbdebug.dbeaver.interp.ExecutionControl;
 import dev.fbdebug.dbeaver.interp.Frame;
 import dev.fbdebug.dbeaver.interp.ProcedureResult;
+import dev.fbdebug.dbeaver.interp.ServerCalls;
 import dev.fbdebug.dbeaver.interp.SessionAbortedException;
 import dev.fbdebug.dbeaver.interp.StatementHook;
 import dev.fbdebug.dbeaver.interp.Variable;
@@ -35,10 +37,10 @@ import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 
 /**
  * Sessão de debug no modelo do Eclipse: um alvo com uma thread, a execução da Rotina, que roda numa thread própria.
- * Ela para nos breakpoints da conexão da sessão e no step over ({@link ExecutionControl}). Na pausa, a edição de
- * variáveis e os watches rodam na thread da execução. As saídas, o erro ou a interrupção vão para o
- * {@link SessionConsole}. Terminate pede o fim à sessão ({@link DebugSession#abort()}): ela para antes do próximo
- * statement, mesmo pausada, e faz rollback.
+ * Ela para nos breakpoints da conexão da sessão, inclusive nos das Rotinas chamadas, e nos steps
+ * ({@link ExecutionControl}). Na pausa, a edição de variáveis e os watches rodam na thread da execução. As saídas, o
+ * erro ou a interrupção vão para o {@link SessionConsole}. Terminate pede o fim à sessão
+ * ({@link DebugSession#abort()}): ela para antes do próximo statement, mesmo pausada, e faz rollback.
  */
 public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTarget {
 
@@ -46,8 +48,11 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
     @FunctionalInterface
     public interface SessionOpener {
 
-        /** @param hook o gancho da sessão, que pausa a execução */
-        DebugSession open(StatementHook hook) throws SQLException;
+        /**
+         * @param control o controle da sessão: o gancho que pausa a execução ({@link StatementHook}) e a política das
+         *            chamadas, que escolhe entre step into e step over ({@link CallPolicy})
+         */
+        DebugSession open(ExecutionControl control) throws SQLException;
     }
 
     private static final ILog LOG = ILog.of(PsqlDebugTarget.class);
@@ -90,7 +95,17 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
         this.connectionOwner = connectionOwner;
         this.console = console;
         this.thread = new PsqlThread(this);
-        this.control = new ExecutionControl(this::breakpointAt, thread::paused, this::frames);
+        this.control = new ExecutionControl(new ExecutionControl.Breakpoints() {
+            @Override
+            public Object at(RoutineDefinition source, int line) {
+                return breakpointAt(source, line);
+            }
+
+            @Override
+            public boolean none() {
+                return breakpoints.isEmpty() || !breakpointManager().isEnabled();
+            }
+        }, thread::paused, this::frames);
     }
 
     /** Anuncia o alvo e a thread, passa a acompanhar os breakpoints e começa a execução. */
@@ -195,6 +210,24 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
     /** Texto de que são as posições do frame. */
     SourceId sourceOf(Frame frame) {
         return SourceId.of(dataSourceId, frame.sourceRoutine());
+    }
+
+    /**
+     * Chamadas sem step into do texto do frame, para o aviso no editor ({@link DebugSession#serverCalls}). Na thread da
+     * execução, na pausa; sem aviso se o servidor falhar ao ler os metadados.
+     */
+    List<ServerCalls.Call> serverCalls(Frame frame) {
+        DebugSession current = session;
+        if (current == null) {
+            return List.of();
+        }
+        try {
+            return current.serverCalls(frame.sourceRoutine());
+        } catch (SQLException | RuntimeException e) {
+            LOG.warn("Falha ao procurar as chamadas executadas no servidor de " + frame.sourceRoutine().displayName(),
+                    e);
+            return List.of();
+        }
     }
 
     /** Na thread da execução, a cada statement. "Pular todos os breakpoints" da view Breakpoints vale aqui. */

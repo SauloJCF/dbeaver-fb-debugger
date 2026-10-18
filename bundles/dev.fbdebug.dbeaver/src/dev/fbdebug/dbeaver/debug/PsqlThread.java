@@ -1,5 +1,6 @@
 package dev.fbdebug.dbeaver.debug;
 
+import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,9 +15,10 @@ import dev.fbdebug.dbeaver.interp.Frame;
 import dev.fbdebug.dbeaver.interp.Variable;
 
 /**
- * A execução da Rotina. Pausa, resume, step over e suspend vão para o {@link ExecutionControl} da sessão; os stack
- * frames são os frames do Interpretador, do de cima até a Rotina raiz, e só existem com a execução pausada. Step into
- * e step return entram na issue 17.
+ * A execução da Rotina. Pausa, resume, steps e suspend vão para o {@link ExecutionControl} da sessão; os stack
+ * frames são os frames do Interpretador, do de cima até a Rotina raiz, e só existem com a execução pausada. Os steps
+ * pedidos por um stack frame valem para ele, como no Eclipse ({@link PsqlStackFrame}); pedidos pela thread, para o de
+ * cima.
  */
 final class PsqlThread extends PsqlDebugElement implements IThread {
 
@@ -50,7 +52,8 @@ final class PsqlThread extends PsqlDebugElement implements IThread {
 
     /**
      * Execução pausada: chamado na thread dela, que fica parada até o próximo comando. Os valores das variáveis ficam
-     * guardados para a próxima pausa destacar os que mudaram.
+     * guardados para a próxima pausa destacar os que mudaram. Cada frame leva as chamadas sem step into do texto dele,
+     * para o aviso no editor.
      */
     void paused(ExecutionControl.Pause pause) {
         List<Frame> frames = pause.frames();
@@ -58,7 +61,8 @@ final class PsqlThread extends PsqlDebugElement implements IThread {
         Map<Variable, Object> values = new IdentityHashMap<>();
         for (int i = 0; i < frames.size(); i++) {
             Frame frame = frames.get(i);
-            built[i] = new PsqlStackFrame(this, target, frame, target.sourceOf(frame), previousValues);
+            built[i] = new PsqlStackFrame(this, target, frame, target.sourceOf(frame), previousValues,
+                    target.serverCalls(frame));
             frame.variables().forEach(variable -> values.put(variable, variable.value()));
         }
         previousValues = values;
@@ -144,7 +148,7 @@ final class PsqlThread extends PsqlDebugElement implements IThread {
 
     @Override
     public boolean canStepInto() {
-        return false;
+        return isSuspended();
     }
 
     @Override
@@ -152,9 +156,10 @@ final class PsqlThread extends PsqlDebugElement implements IThread {
         return isSuspended();
     }
 
+    /** Na Rotina raiz, não há para onde voltar. */
     @Override
     public boolean canStepReturn() {
-        return false;
+        return isSuspended() && stackFrames.length > 1;
     }
 
     @Override
@@ -163,20 +168,61 @@ final class PsqlThread extends PsqlDebugElement implements IThread {
     }
 
     @Override
-    public void stepInto() {
-    }
-
-    @Override
-    public synchronized void stepOver() {
+    public synchronized void stepInto() {
         if (isSuspended()) {
             stepping = true;
-            resumed(DebugEvent.STEP_OVER);
-            target.control().stepOver();
+            resumed(DebugEvent.STEP_INTO);
+            target.control().stepInto();
         }
     }
 
     @Override
+    public void stepOver() {
+        stepOver(null);
+    }
+
+    @Override
     public void stepReturn() {
+        stepReturn(null);
+    }
+
+    /**
+     * Step over no frame: para no próximo statement dele, passando pelos frames de cima.
+     *
+     * @param frame frame da pausa atual; {@code null} para o de cima
+     */
+    synchronized void stepOver(PsqlStackFrame frame) {
+        if (isSuspended() && isCurrent(frame)) {
+            stepping = true;
+            resumed(DebugEvent.STEP_OVER);
+            if (frame == null) {
+                target.control().stepOver();
+            } else {
+                target.control().stepOver(frame.frame());
+            }
+        }
+    }
+
+    /**
+     * Step return do frame: para no próximo statement de quem o chamou.
+     *
+     * @param frame frame da pausa atual; {@code null} para o de cima
+     */
+    synchronized void stepReturn(PsqlStackFrame frame) {
+        if (isSuspended() && isCurrent(frame)) {
+            stepping = true;
+            resumed(DebugEvent.STEP_RETURN);
+            if (frame == null) {
+                target.control().stepReturn();
+            } else {
+                target.control().stepReturn(frame.frame());
+            }
+        }
+    }
+
+    /** O frame é da pausa atual ({@code null} vale como o de cima). */
+    private boolean isCurrent(PsqlStackFrame frame) {
+        return frame == null || Arrays.asList(stackFrames).contains(frame);
     }
 
     @Override

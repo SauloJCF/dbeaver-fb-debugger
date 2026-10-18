@@ -2,7 +2,9 @@ package dev.fbdebug.dbeaver.interp;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -37,7 +39,10 @@ public final class DebugSession implements AutoCloseable {
     private final Connection connection;
     private final boolean commitOnFinish;
     private final TemporaryPackages packages;
+    private final RoutineCatalog catalog;
     private final Interpreter interpreter;
+    /** Só a thread da execução: as chamadas sem step into de cada texto já visto. */
+    private final Map<RoutineDefinition, List<ServerCalls.Call>> serverCallsBySource = new IdentityHashMap<>();
     private volatile boolean abortRequested;
     private boolean finished;
 
@@ -62,7 +67,8 @@ public final class DebugSession implements AutoCloseable {
 
     /**
      * @param connection conexão dedicada à sessão, ainda sem transação em andamento; passa a ser da sessão
-     * @param policy escolha entre step into e step over a cada chamada elegível
+     * @param policy escolha entre step into e step over a cada chamada elegível; com um {@link ExecutionControl}, ele
+     *            mesmo, que também é o {@code hook}
      * @param hook chamado antes de cada statement (ver {@link StatementHook}), depois da verificação do
      *            {@link #abort()}
      */
@@ -79,8 +85,8 @@ public final class DebugSession implements AutoCloseable {
             hook.beforeStatement(frame, statement);
             checkAbort();
         };
-        this.interpreter = new Interpreter(connection, new DatabaseRoutineCatalog(connection), policy, packages,
-                abortable);
+        this.catalog = new DatabaseRoutineCatalog(connection);
+        this.interpreter = new Interpreter(connection, catalog, policy, packages, abortable);
     }
 
     /**
@@ -121,6 +127,21 @@ public final class DebugSession implements AutoCloseable {
      */
     public WatchValue watch(Frame frame, String text) throws SQLException {
         return interpreter.watch(frame, RoutineParser.parseWatch(text));
+    }
+
+    /**
+     * Chamadas sem step into do texto de uma Rotina da pilha, para o aviso no editor (ver {@link ServerCalls}).
+     * Calculadas uma vez por texto, na thread da execução: com um {@link ExecutionControl}, numa pausa.
+     *
+     * @param source Rotina de cujo texto são as posições ({@link Frame#sourceRoutine()})
+     */
+    public List<ServerCalls.Call> serverCalls(RoutineDefinition source) throws SQLException {
+        List<ServerCalls.Call> calls = serverCallsBySource.get(source);
+        if (calls == null) {
+            calls = List.copyOf(ServerCalls.of(source, catalog));
+            serverCallsBySource.put(source, calls);
+        }
+        return calls;
     }
 
     /**

@@ -31,7 +31,7 @@ import dev.fbdebug.dbeaver.psql.ast.UnsupportedConstruct;
 public final class Frame {
 
     private final RoutineDefinition routine;
-    private final boolean steppedInto;
+    private boolean steppedInto;
     /** Rotinas da package da Rotina, que uma chamada sem package dentro dela alcança. */
     private final Set<String> packageRoutines;
     /** Execução da Rotina que declara a sub-rotina deste frame; {@code null} fora de sub-rotina. */
@@ -118,13 +118,20 @@ public final class Frame {
     }
 
     /**
-     * A Rotina é a raiz ou foi interpretada por step into. Falso numa Rotina que o Interpretador interpreta por
-     * conta própria num step over, porque no servidor a chamada não seria fiel ao motor ({@code FOR SELECT} sobre
+     * A camada de debug acompanha a Rotina: ela é a raiz, foi interpretada por step into, ou a execução pode parar
+     * dentro dela (ver {@link CallPolicy#stopsInside}). Falso numa Rotina que o Interpretador interpreta por conta
+     * própria num step over, porque no servidor a chamada não seria fiel ao motor ({@code FOR SELECT} sobre
      * procedure) ou não acharia a Rotina (privada de package); ver {@link CallPolicy}. A camada de debug não para
-     * dentro dela.
+     * dentro dela. A procedure de um {@code FOR SELECT} pode passar a ser acompanhada numa volta seguinte do laço
+     * ({@link #follow()}).
      */
     public boolean steppedInto() {
         return steppedInto;
+    }
+
+    /** Passa a ser acompanhada pela camada de debug (ver {@link #steppedInto()}), a partir do próximo statement. */
+    void follow() {
+        steppedInto = true;
     }
 
     /** Statement em execução (ou, numa Rotina que chama outra, o da chamada); antes do primeiro, o bloco principal. */
