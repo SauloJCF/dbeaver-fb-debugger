@@ -24,6 +24,17 @@ O parser PSQL é gerado pelo ANTLR a partir de `bundles/dev.fbdebug.dbeaver/antl
 
 Depois de mudar a gramática, use `.\mvnw clean verify`: a compilação incremental do Tycho não recompila as classes que só usam as constantes de token do léxico (o Java as embute), e um token novo desloca os números.
 
+### Gerar o zip de instalação
+
+O zip que a equipe instala no DBeaver é o repositório p2. Para gerá-lo:
+
+1. Abra um terminal (PowerShell) na raiz do repositório.
+2. Rode `.\mvnw clean verify`. Sem um Firebird 5 local configurado para os Testes diferenciais (ver abaixo), rode `.\mvnw clean verify -DskipTests`.
+3. Confira `BUILD SUCCESS` no fim da saída.
+4. O zip fica em `releng\dev.fbdebug.dbeaver.repository\target\firebird-psql-debugger-0.1.0.<data-hora>.zip`. O sufixo é o *qualifier* do Tycho (`aaaaMMddHHmm`, em UTC), então cada build gera um nome novo.
+
+O zip contém a feature, o plugin `dev.fbdebug.dbeaver` (com o runtime do ANTLR embutido) e o `org.eclipse.debug.ui` (ADR 0004). O `clean` garante que não sobra zip de build anterior em `target/`.
+
 ### Testes diferenciais
 
 O `verify` roda os testes JUnit do plugin, e os Testes diferenciais (ADR 0005) precisam de um **Firebird 5 local**:
