@@ -73,6 +73,39 @@ public final class RoutineParser {
     }
 
     /**
+     * Rotina implementada num corpo de package e o trecho dela no texto.
+     *
+     * @param routine a rotina, sem os valores padrão do cabeçalho (para executá-la, ver {@link #parsePackageRoutine})
+     * @param firstLine linha do {@code PROCEDURE} ou {@code FUNCTION} que a começa
+     * @param lastLine linha do {@code END} que a termina
+     */
+    public record PackageRoutine(RoutineDefinition routine, int firstLine, int lastLine) {
+    }
+
+    /**
+     * Rotinas implementadas no corpo de uma package, na ordem do texto. As posições são do texto {@code body}.
+     *
+     * @param body {@code CREATE | RECREATE PACKAGE BODY ...} completo
+     * @throws PsqlSyntaxException no primeiro trecho não reconhecido
+     */
+    public static List<PackageRoutine> parsePackageBody(String body) {
+        Parsing parsing = new Parsing(body);
+        return AstBuilder.packageRoutines(parsing.tokens, parsing.parser.packageDefinition());
+    }
+
+    /**
+     * Texto de um trecho de um documento maior, como o {@code EXECUTE BLOCK} selecionado no editor SQL, precedido de
+     * quebras de linha e espaços até onde ele começa no documento: as posições do AST e do Pré-check passam a ser as
+     * do documento.
+     *
+     * @param line linha do documento em que o trecho começa, a partir de 1
+     * @param column coluna dessa linha em que o trecho começa, a partir de 1
+     */
+    public static String placed(String text, int line, int column) {
+        return "\n".repeat(line - 1) + " ".repeat(column - 1) + text;
+    }
+
+    /**
      * Coluna da tabela de uma trigger.
      *
      * @param name nome da coluna como está nos metadados
@@ -129,12 +162,13 @@ public final class RoutineParser {
     /** Léxico e parser de um texto, parando no primeiro erro. */
     private static final class Parsing {
 
+        final CommonTokenStream tokens;
         final PsqlParser parser;
         final AstBuilder builder;
 
         Parsing(String text) {
             PsqlLexer lexer = new PsqlLexer(CharStreams.fromString(text));
-            CommonTokenStream tokens = new CommonTokenStream(lexer);
+            tokens = new CommonTokenStream(lexer);
             parser = new PsqlParser(tokens);
             lexer.removeErrorListeners();
             lexer.addErrorListener(FailFast.INSTANCE);

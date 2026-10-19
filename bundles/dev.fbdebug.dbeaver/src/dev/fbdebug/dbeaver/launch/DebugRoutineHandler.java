@@ -6,20 +6,29 @@ import org.eclipse.core.expressions.IEvaluationContext;
 import org.eclipse.ui.ISources;
 import org.eclipse.ui.handlers.HandlerUtil;
 import org.jkiss.dbeaver.ext.generic.model.GenericProcedure;
+import org.jkiss.dbeaver.ui.editors.sql.SQLEditor;
 
 /**
- * Comando "Depurar Rotina", no menu de contexto do navegador, no do editor de objeto e no menu "PSQL Debug". Fica
- * habilitado só com uma Rotina Firebird selecionada ou com o editor dela ativo. Com uma view que não é o navegador em
- * foco (Breakpoints, Variables, console), vale o editor ativo, para o menu "PSQL Debug" funcionar na perspectiva Debug.
+ * Comando "Depurar Rotina", no menu de contexto do navegador, no do editor de objeto, no do editor SQL e no menu
+ * "PSQL Debug". Fica habilitado só com uma Rotina Firebird selecionada, com o editor dela ativo ou com um editor SQL
+ * de conexão Firebird ativo (o {@code EXECUTE BLOCK} selecionado, ou a rotina do console de uma package sob o cursor).
+ * Com uma view que não é o navegador em foco (Breakpoints, Variables, console), vale o editor ativo, para o menu
+ * "PSQL Debug" funcionar na perspectiva Debug.
  */
 public final class DebugRoutineHandler extends AbstractHandler {
 
     @Override
     public Object execute(ExecutionEvent event) {
-        GenericProcedure procedure = DebuggableRoutines.find(HandlerUtil.getCurrentSelection(event),
-                HandlerUtil.getActivePart(event), HandlerUtil.getActiveEditorInput(event));
+        Object activePart = HandlerUtil.getActivePart(event);
+        GenericProcedure procedure = DebuggableRoutines.find(HandlerUtil.getCurrentSelection(event), activePart,
+                HandlerUtil.getActiveEditor(event));
         if (procedure != null) {
             RoutineLauncher.launch(HandlerUtil.getActiveShell(event), procedure);
+            return null;
+        }
+        SQLEditor editor = DebuggableRoutines.findSqlEditor(activePart, HandlerUtil.getActiveEditor(event));
+        if (editor != null) {
+            RoutineLauncher.launch(HandlerUtil.getActiveShell(event), editor);
         }
         return null;
     }
@@ -27,13 +36,11 @@ public final class DebugRoutineHandler extends AbstractHandler {
     @Override
     public void setEnabled(Object evaluationContext) {
         if (evaluationContext instanceof IEvaluationContext context) {
-            setBaseEnabled(DebuggableRoutines.find(variable(context, ISources.ACTIVE_CURRENT_SELECTION_NAME),
-                    variable(context, ISources.ACTIVE_PART_NAME),
-                    variable(context, ISources.ACTIVE_EDITOR_INPUT_NAME)) != null);
+            Object activePart = context.getVariable(ISources.ACTIVE_PART_NAME);
+            setBaseEnabled(DebuggableRoutines.find(context.getVariable(ISources.ACTIVE_CURRENT_SELECTION_NAME),
+                    activePart, context.getVariable(ISources.ACTIVE_EDITOR_NAME)) != null
+                    || DebuggableRoutines.findSqlEditor(activePart,
+                            context.getVariable(ISources.ACTIVE_EDITOR_NAME)) != null);
         }
-    }
-
-    private static Object variable(IEvaluationContext context, String name) {
-        return context.getVariable(name);
     }
 }

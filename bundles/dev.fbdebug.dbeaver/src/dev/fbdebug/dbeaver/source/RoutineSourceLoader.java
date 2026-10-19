@@ -65,6 +65,12 @@ public final class RoutineSourceLoader {
             FROM RDB$PACKAGES
             WHERE RDB$PACKAGE_NAME = ?""";
 
+    private static final String PACKAGES_SQL = """
+            SELECT RDB$PACKAGE_NAME
+            FROM RDB$PACKAGES
+            WHERE RDB$PACKAGE_BODY_SOURCE IS NOT NULL AND COALESCE(RDB$SYSTEM_FLAG, 0) = 0
+            ORDER BY RDB$PACKAGE_NAME""";
+
     private static final String TRIGGER_SQL = """
             SELECT RDB$RELATION_NAME, RDB$TRIGGER_TYPE, RDB$TRIGGER_SOURCE
             FROM RDB$TRIGGERS
@@ -208,6 +214,18 @@ public final class RoutineSourceLoader {
             text.append("SQL SECURITY ").append(sqlSecurity).append('\n'); // como o DBeaver, numa linha própria
         }
         return text.append("AS\n").append(body).toString();
+    }
+
+    /** @return os nomes, como estão nos metadados, das packages de usuário que têm corpo, em ordem alfabética */
+    public static List<String> listPackages(Connection connection) throws SQLException {
+        List<String> names = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(PACKAGES_SQL);
+                ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                names.add(resultSet.getString(1).strip());
+            }
+        }
+        return names;
     }
 
     /** @param name nome da package como está nos metadados */

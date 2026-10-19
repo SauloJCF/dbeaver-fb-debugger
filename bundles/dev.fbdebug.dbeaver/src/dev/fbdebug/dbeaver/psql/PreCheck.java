@@ -68,9 +68,14 @@ public final class PreCheck {
         try {
             procedure = RoutineParser.parse(text);
         } catch (PsqlSyntaxException e) {
-            return List.of(new Finding(e.position(), "não suportado pelo debugger, " + e.detail()));
+            return List.of(unrecognized(e));
         }
         return scan(procedure);
+    }
+
+    /** Texto que o parser não reconhece: um item só, na posição do erro. */
+    public static Finding unrecognized(PsqlSyntaxException error) {
+        return new Finding(error.position(), "não suportado pelo debugger, " + error.detail());
     }
 
     /**

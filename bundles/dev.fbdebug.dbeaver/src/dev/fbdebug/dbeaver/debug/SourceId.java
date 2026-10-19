@@ -5,10 +5,12 @@ import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 /**
  * Texto de Rotina numa conexão do DBeaver, de onde são as linhas dos breakpoints e dos stack frames: o que o editor do
  * objeto mostra, que é a Fonte do banco. As sub-rotinas ficam no texto da Rotina que as declara; uma rotina de
- * package, no corpo da package.
+ * package, no corpo da package, que o console aberto por "Abrir Package" mostra. Um {@code EXECUTE BLOCK} não existe
+ * no banco: o texto é o do editor SQL de onde ele sai.
  *
  * @param dataSourceId id da conexão do DBeaver
- * @param name nome da Rotina (ou da package) como está nos metadados; {@code null} num {@code EXECUTE BLOCK}
+ * @param name nome da Rotina (ou da package) como está nos metadados; num {@code EXECUTE BLOCK}, o nome do editor SQL
+ *            (ou {@code null}, se não se sabe de que editor ele é)
  */
 public record SourceId(String dataSourceId, Kind kind, String name) {
 

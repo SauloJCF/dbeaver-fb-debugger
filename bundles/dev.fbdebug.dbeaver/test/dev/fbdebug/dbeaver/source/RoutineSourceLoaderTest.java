@@ -70,7 +70,21 @@ class RoutineSourceLoaderTest {
                   BEGIN
                     X = X + 1;
                   END
-                END""");
+                END""",
+                "CREATE OR ALTER PACKAGE DT_PKG_SEM_CORPO AS BEGIN PROCEDURE P; END");
+    }
+
+    @Test
+    void packagesAreThoseWithABody() throws Exception {
+        List<String> packages;
+        try (Connection connection = database.connect()) {
+            packages = RoutineSourceLoader.listPackages(connection);
+        }
+
+        // Outras classes de teste criam packages no mesmo banco: só as daqui são conferidas.
+        assertTrue(packages.contains("DT_PKG"), packages.toString());
+        assertTrue(!packages.contains("DT_PKG_SEM_CORPO"), packages.toString());
+        assertEquals(packages.stream().sorted().toList(), packages);
     }
 
     /**

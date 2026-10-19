@@ -33,14 +33,13 @@ import org.eclipse.ui.texteditor.MarkerAnnotation;
 import dev.fbdebug.dbeaver.debug.PsqlLineBreakpoint;
 import dev.fbdebug.dbeaver.debug.SourceId;
 import dev.fbdebug.dbeaver.psql.PsqlSyntaxException;
-import dev.fbdebug.dbeaver.psql.RoutineParser;
 import dev.fbdebug.dbeaver.psql.StatementLines;
-import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 
 /**
  * Breakpoints de linha no editor de Rotina do DBeaver: alternados no texto da pasta Source, com a marca no ruler, e
  * removidos quando o editor fecha (não persistentes, ADR 0004). Um breakpoint numa linha sem statement vai para o
- * próximo statement ({@link StatementLines}); sem nenhum depois, é recusado.
+ * próximo statement ({@link StatementLines}); sem nenhum depois, é recusado. No editor SQL de uma conexão Firebird
+ * ({@link SqlEditors}), valem dentro de um {@code EXECUTE BLOCK} e no console do corpo de uma package.
  * <p>
  * O editor do DBeaver não é de arquivo, e o modelo de anotações dele não acompanha markers: a marca do ruler é posta e
  * tirada à mão, e posta de novo quando o editor recarrega o texto. Ela acompanha o texto editado; a linha do
@@ -112,8 +111,8 @@ public final class EditorBreakpoints {
         SourceId source = RoutineEditors.sourceOf(editor);
         IDocument document = text == null ? null : RoutineEditors.document(text);
         if (source == null || document == null) {
-            RoutineEditors.status(part, "Breakpoint só no texto (pasta Source) de procedure ou function Firebird.",
-                    true);
+            RoutineEditors.status(part, "Breakpoint só no texto (pasta Source) de procedure ou function Firebird, "
+                    + "ou num editor SQL de conexão Firebird.", true);
             return;
         }
         if (documentLine < 0) {
@@ -125,7 +124,7 @@ public final class EditorBreakpoints {
             remove(existing);
             return;
         }
-        Integer line = statementLine(text, document, clicked);
+        Integer line = statementLine(editor, text, document, clicked);
         if (line == null) {
             return;
         }
@@ -149,20 +148,26 @@ public final class EditorBreakpoints {
     /**
      * Linha do statement que recebe o breakpoint: a clicada, se tem statement, ou a do próximo. Se o texto do editor
      * não é reconhecido (alteração não salva, por exemplo), fica a clicada; o launch acerta a linha pela Fonte do
-     * banco ({@link #prepareLaunch}).
+     * banco ({@link #prepareLaunch}). Num editor SQL, o texto é o do {@code EXECUTE BLOCK} que contém a linha, ou o
+     * corpo da package do console.
      *
-     * @return {@code null} se não há statement na linha nem depois dela
+     * @return {@code null} se não há statement na linha nem depois dela, ou se a linha não está num
+     *         {@code EXECUTE BLOCK}
      */
-    private static Integer statementLine(ITextEditor text, IDocument document, int clicked) {
-        RoutineDefinition routine;
+    private static Integer statementLine(IEditorPart editor, ITextEditor text, IDocument document, int clicked) {
+        NavigableSet<Integer> lines;
         try {
-            routine = RoutineParser.parse(document.get());
+            lines = RoutineEditors.statementLines(editor, document, clicked);
         } catch (PsqlSyntaxException e) {
             RoutineEditors.status(text, "Texto não reconhecido (" + e.getMessage()
                     + "); o breakpoint fica na linha e é conferido no launch.", false);
             return clicked;
         }
-        Integer line = StatementLines.of(routine).ceiling(clicked);
+        if (lines == null) {
+            RoutineEditors.status(text, "No editor SQL, breakpoint só dentro de um EXECUTE BLOCK.", true);
+            return null;
+        }
+        Integer line = lines.ceiling(clicked);
         if (line == null) {
             RoutineEditors.status(text, "Não há statement nesta linha nem depois dela.", true);
         }
@@ -207,14 +212,17 @@ public final class EditorBreakpoints {
 
     /**
      * Antes do launch da Rotina, acerta os breakpoints: a linha de cada um passa a ser a da marca no ruler, que
-     * acompanhou o texto editado e salvo desde que ele foi posto. Nos da Rotina, um breakpoint numa linha sem
-     * statement da Fonte do banco vai para o próximo statement (sem nenhum depois, fica onde está e não para). Os das
-     * outras Rotinas, que a execução pode chamar, só seguem a marca: a Fonte do banco delas só é lida na chamada.
+     * acompanhou o texto editado e salvo desde que ele foi posto. Nos do texto da Rotina, um breakpoint numa linha sem
+     * statement vai para o próximo statement (sem nenhum depois, fica onde está e não para). Os das outras Rotinas, que
+     * a execução pode chamar, só seguem a marca: a Fonte do banco delas só é lida na chamada.
      *
-     * @param routine a Rotina, da Fonte do banco
+     * @param source o texto da Rotina: a Fonte do banco ou, num {@code EXECUTE BLOCK}, o editor SQL
+     * @param lines linhas com statement do texto: as da Rotina ou, no corpo de uma package, as de todas as rotinas
+     *            dele ({@link StatementLines})
+     * @param firstLine linha em que a Rotina começa no texto: 1, ou a do {@code EXECUTE BLOCK} no editor SQL, onde os
+     *            breakpoints de cima são de outro bloco e ficam onde estão
      */
-    public static void prepareLaunch(SourceId source, RoutineDefinition routine) {
-        NavigableSet<Integer> lines = StatementLines.of(routine);
+    public static void prepareLaunch(SourceId source, NavigableSet<Integer> lines, int firstLine) {
         for (Map.Entry<PsqlLineBreakpoint, Placement> entry : PLACEMENTS.entrySet()) {
             PsqlLineBreakpoint breakpoint = entry.getKey();
             Placement placement = entry.getValue();
@@ -222,7 +230,8 @@ public final class EditorBreakpoints {
             if (current < 1) {
                 continue; // o marker foi removido
             }
-            Integer statement = source.equals(breakpoint.source()) ? lines.ceiling(current) : null;
+            Integer statement = source.equals(breakpoint.source()) && current >= firstLine ? lines.ceiling(current)
+                    : null;
             int line = statement == null ? current : statement;
             try {
                 if (line != breakpoint.getLineNumber()) {

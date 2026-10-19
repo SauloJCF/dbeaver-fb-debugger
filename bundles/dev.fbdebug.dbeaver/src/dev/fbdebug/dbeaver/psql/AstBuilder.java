@@ -290,18 +290,40 @@ final class AstBuilder {
      */
     RoutineDefinition packageRoutine(PsqlParser.PackageDefinitionContext ctx, RoutineDefinition.Kind kind,
             String name) {
+        requireBody(ctx);
+        PsqlParser.PackageRoutineContext routine = findPackageRoutine(ctx, kind, name);
+        return routine == null ? null : packageRoutine(ctx, routine);
+    }
+
+    /**
+     * Rotinas implementadas num {@code CREATE PACKAGE BODY}, na ordem do texto, sem os valores padrão do cabeçalho.
+     * Um builder por rotina, porque um builder monta uma Rotina só.
+     */
+    static List<RoutineParser.PackageRoutine> packageRoutines(TokenStream tokens,
+            PsqlParser.PackageDefinitionContext ctx) {
+        requireBody(ctx);
+        List<RoutineParser.PackageRoutine> routines = new ArrayList<>();
+        for (PsqlParser.PackageRoutineContext routine : ctx.packageRoutine()) {
+            routines.add(new RoutineParser.PackageRoutine(new AstBuilder(tokens).packageRoutine(ctx, routine),
+                    routine.getStart().getLine(), routine.getStop().getLine()));
+        }
+        return routines;
+    }
+
+    private static void requireBody(PsqlParser.PackageDefinitionContext ctx) {
         if (ctx.BODY() == null) {
             throw new PsqlSyntaxException("esperado CREATE PACKAGE BODY", position(ctx));
         }
-        PsqlParser.PackageRoutineContext routine = findPackageRoutine(ctx, kind, name);
-        if (routine == null) {
-            return null;
-        }
+    }
+
+    private RoutineDefinition packageRoutine(PsqlParser.PackageDefinitionContext ctx,
+            PsqlParser.PackageRoutineContext routine) {
+        String name = name(routine.identifier());
         if (routine.routineBody() == null) {
             throw new PsqlSyntaxException("rotina sem corpo no CREATE PACKAGE BODY: " + name, position(routine));
         }
         String packageName = name(ctx.identifier());
-        return kind == RoutineDefinition.Kind.FUNCTION
+        return routine.FUNCTION() != null
                 ? function(packageName, name, routine.functionSignature(), routine.routineBody())
                 : procedure(packageName, name, routine.procedureSignature(), routine.routineBody());
     }

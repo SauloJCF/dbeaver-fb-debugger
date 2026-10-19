@@ -65,14 +65,19 @@ public final class PsqlLineBreakpoint extends LineBreakpoint {
         marker.setAttribute(IMarker.MESSAGE, label(source, line));
     }
 
-    /** Texto da view Breakpoints: {@code P [linha 12]}; {@code null} se o marker já foi removido. */
+    /**
+     * Texto da view Breakpoints: {@code P [linha 12]}; num editor SQL, {@code EXECUTE BLOCK (Script-3.sql) [linha 12]};
+     * {@code null} se o marker já foi removido.
+     */
     public String label() {
         SourceId source = source();
         return source == null ? null : label(source, getMarker().getAttribute(IMarker.LINE_NUMBER, 0));
     }
 
     private static String label(SourceId source, int line) {
-        return (source.name() == null ? "EXECUTE BLOCK" : source.name()) + " [linha " + line + "]";
+        String name = source.kind() == SourceId.Kind.EXECUTE_BLOCK
+                ? "EXECUTE BLOCK" + (source.name() == null ? "" : " (" + source.name() + ")") : source.name();
+        return name + " [linha " + line + "]";
     }
 
     @Override

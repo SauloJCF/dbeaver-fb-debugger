@@ -160,6 +160,48 @@ class RootRoutineParserTest {
     }
 
     @Test
+    void packageBodyListsItsRoutinesWithTheLinesWhereEachOneIs() {
+        List<RoutineParser.PackageRoutine> routines = RoutineParser.parsePackageBody(PACKAGE_BODY);
+
+        assertEquals(List.of("PKG.SOMA", "PKG.SOMA", "PKG.PRIVADA"),
+                routines.stream().map(routine -> routine.routine().displayName()).toList());
+        assertEquals(RoutineDefinition.Kind.FUNCTION, routines.get(0).routine().kind());
+        assertEquals(RoutineDefinition.Kind.PROCEDURE, routines.get(1).routine().kind());
+        assertEquals(List.of(4, 10, 18), routines.stream().map(RoutineParser.PackageRoutine::firstLine).toList());
+        assertEquals(List.of(8, 16, 22), routines.stream().map(RoutineParser.PackageRoutine::lastLine).toList());
+        // Cada rotina é montada à parte: o SUSPEND de uma não a outra selecionável.
+        assertFalse(routines.get(0).routine().selectable());
+        assertTrue(routines.get(1).routine().selectable());
+        assertFalse(routines.get(2).routine().selectable());
+        assertEquals(new SourcePosition(15, 5), routines.get(1).routine().body().statements().get(1).position());
+        // Sem o cabeçalho, sem os valores padrão dele.
+        assertNull(routines.get(1).routine().inputs().get(1).defaultValue());
+    }
+
+    @Test
+    void packageHeaderIsNotABody() {
+        assertThrows(PsqlSyntaxException.class, () -> RoutineParser.parsePackageBody(PACKAGE_HEADER));
+    }
+
+    @Test
+    void placedTextHasThePositionsOfTheDocument() {
+        String block = """
+                EXECUTE BLOCK RETURNS (R INTEGER)
+                AS
+                BEGIN
+                  R = 1;
+                END""";
+
+        RoutineDefinition placed = RoutineParser.parse(RoutineParser.placed(block, 5, 9));
+
+        // Na primeira linha, a coluna em que o bloco começa conta; nas outras, só a linha.
+        assertEquals(new SourcePosition(5, 32), placed.outputs().get(0).position());
+        assertEquals(new SourcePosition(8, 3), placed.body().statements().get(0).position());
+        assertEquals(RoutineParser.parse(block).body().statements().get(0).position().column(),
+                placed.body().statements().get(0).position().column());
+    }
+
+    @Test
     void missingPackageRoutineIsAnError() {
         assertThrows(PsqlSyntaxException.class, () -> RoutineParser.parsePackageRoutine(PACKAGE_HEADER,
                 PACKAGE_BODY, RoutineDefinition.Kind.FUNCTION, "PRIVADA"));

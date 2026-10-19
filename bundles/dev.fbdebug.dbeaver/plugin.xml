@@ -37,6 +37,10 @@
                 id="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
                 name="Alternar Breakpoint"
                 description="Alterna o breakpoint da linha clicada no ruler do editor de Rotina Firebird"/>
+        <command
+                id="dev.fbdebug.dbeaver.openPackage"
+                name="Abrir Package..."
+                description="Mostra o corpo de uma package Firebird num console, para depurar as rotinas dela"/>
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -50,7 +54,8 @@
 
     <extension point="org.eclipse.ui.handlers">
         <!-- Antes de o plugin carregar, vale esta expressão; depois, o handler confere a Rotina de fato. O plugin do
-             Firebird do DBeaver não exporta FireBirdProcedure, mas a expressão compara só o nome da classe. -->
+             Firebird do DBeaver não exporta FireBirdProcedure, mas a expressão compara só o nome da classe. No editor
+             SQL (EXECUTE BLOCK, console de package), o handler confere se a conexão é Firebird. -->
         <handler
                 commandId="dev.fbdebug.dbeaver.debugRoutine"
                 class="dev.fbdebug.dbeaver.launch.DebugRoutineHandler">
@@ -68,21 +73,32 @@
                     <with variable="activeEditorInput">
                         <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
                     </with>
+                    <with variable="activeEditor">
+                        <instanceof value="org.jkiss.dbeaver.ui.editors.sql.SQLEditor"/>
+                    </with>
                 </or>
             </enabledWhen>
         </handler>
+        <!-- O handler confere se há conexão Firebird no contexto (navegador ou editor ativo). -->
+        <handler
+                commandId="dev.fbdebug.dbeaver.openPackage"
+                class="dev.fbdebug.dbeaver.launch.OpenPackageHandler"/>
         <!-- Ctrl+Shift+B: o debug.ui só liga o comando a um handler pelo breakpointActionSet, que o DBeaver não
-             exibe. Ativo só no editor de objeto de Rotina Firebird, para não tomar o comando de outros debuggers. -->
+             exibe. Ativo só no editor de objeto de Rotina Firebird e no editor SQL de conexão Firebird, para não tomar
+             o comando de outros debuggers. O teste é sobre o editor, e não sobre activeEditorInput, que fica com a
+             entrada provisória de um editor restaurado (RoutineEditorTester). -->
         <handler
                 commandId="org.eclipse.debug.ui.commands.ToggleBreakpoint"
                 class="dev.fbdebug.dbeaver.editor.ToggleBreakpointHandler">
             <activeWhen>
                 <and>
                     <with variable="activePartId">
-                        <equals value="org.jkiss.dbeaver.ui.editors.entity.EntityEditor"/>
+                        <or>
+                            <equals value="org.jkiss.dbeaver.ui.editors.entity.EntityEditor"/>
+                            <equals value="org.jkiss.dbeaver.ui.editors.sql.SQLEditor"/>
+                        </or>
                     </with>
-                    <with variable="activeEditorInput">
-                        <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                    <with variable="activeEditor">
                         <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
                     </with>
                 </and>
@@ -92,8 +108,7 @@
                 commandId="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
                 class="dev.fbdebug.dbeaver.editor.RulerToggleBreakpointHandler">
             <enabledWhen>
-                <with variable="activeEditorInput">
-                    <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                <with variable="activeEditor">
                     <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
                 </with>
             </enabledWhen>
@@ -104,6 +119,7 @@
         <menuContribution locationURI="menu:org.eclipse.ui.main.menu?after=additions">
             <menu id="dev.fbdebug.dbeaver.menu" label="PSQL Debug">
                 <command commandId="dev.fbdebug.dbeaver.debugRoutine"/>
+                <command commandId="dev.fbdebug.dbeaver.openPackage"/>
             </menu>
         </menuContribution>
         <!-- Menu de contexto do navegador: só aparece com a Rotina Firebird. O grupo generate só existe nos menus que o
@@ -118,8 +134,10 @@
                             <with variable="activePart">
                                 <instanceof value="org.eclipse.ui.IEditorPart"/>
                             </with>
-                            <with variable="activeEditorInput">
-                                <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                            <with variable="activeEditor">
+                                <not>
+                                    <instanceof value="org.jkiss.dbeaver.ui.editors.sql.SQLEditor"/>
+                                </not>
                                 <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
                             </with>
                         </and>
@@ -143,13 +161,12 @@
                 </visibleWhen>
             </command>
         </menuContribution>
-        <!-- Menu de contexto do texto dos editores SQL do DBeaver (a pasta Source do editor de objeto), que não tem o
-             grupo generate. Só no editor de uma Rotina Firebird. -->
+        <!-- Menu de contexto do texto dos editores SQL do DBeaver (a pasta Source do editor de objeto e o editor SQL),
+             que não tem o grupo generate. Só no editor de uma Rotina Firebird e no editor SQL de conexão Firebird. -->
         <menuContribution allPopups="false" locationURI="popup:#SQLEditorContext?after=additions">
             <command commandId="dev.fbdebug.dbeaver.debugRoutine">
                 <visibleWhen>
-                    <with variable="activeEditorInput">
-                        <instanceof value="org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput"/>
+                    <with variable="activeEditor">
                         <test property="dev.fbdebug.dbeaver.breakpointSource" forcePluginActivation="true"/>
                     </with>
                 </visibleWhen>
@@ -182,6 +199,32 @@
     </extension>
 
     <!-- ===== Step into e step return (issue 17) ===== -->
+
+    <!-- F7 (step return) no editor SQL (console de package, EXECUTE BLOCK): o SQLEditor do DBeaver ativa sempre o
+         contexto org.jkiss.dbeaver.ui.context.resultset, que liga F7 ao "toggle preview" da grade. Ele e o
+         org.eclipse.debug.ui.debugging têm a mesma profundidade, e o E4 desempata pelo id, o que dá F7 ao DBeaver. Um
+         contexto filho do debugging, ativo enquanto a Sessão de debug está selecionada na view Debug, ganha pela
+         profundidade. F5, F6 e F8 não têm esse conflito. -->
+    <extension point="org.eclipse.ui.contexts">
+        <context
+                id="dev.fbdebug.dbeaver.debugging"
+                name="Depurando Firebird PSQL"
+                parentId="org.eclipse.debug.ui.debugging"/>
+    </extension>
+
+    <extension point="org.eclipse.debug.ui.debugModelContextBindings">
+        <modelContextBinding
+                debugModelId="dev.fbdebug.dbeaver.psql"
+                contextId="dev.fbdebug.dbeaver.debugging"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.bindings">
+        <key
+                sequence="F7"
+                contextId="dev.fbdebug.dbeaver.debugging"
+                commandId="org.eclipse.debug.ui.commands.StepReturn"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"/>
+    </extension>
 
     <!-- Aviso "executado no servidor" no nome de cada chamada sem step into do texto da Rotina, durante a Sessão de
          debug (ServerCallAnnotations). Sem marker: a anotação é posta e tirada à mão, como a marca do breakpoint. -->
@@ -224,6 +267,18 @@
                     actionID="RulerDoubleClick"
                     definitionId="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
                     class="org.eclipse.debug.ui.actions.RulerToggleBreakpointActionDelegate"/>
+        </editorContribution>
+        <!-- O editor SQL do DBeaver é de primeiro nível: o workbench pode instanciar a classe da ação, que alterna o
+             breakpoint só num editor de conexão Firebird (EXECUTE BLOCK, console de package). -->
+        <editorContribution
+                id="dev.fbdebug.dbeaver.sqlRulerActions"
+                targetID="org.jkiss.dbeaver.ui.editors.sql.SQLEditor">
+            <action
+                    id="dev.fbdebug.dbeaver.sqlRulerDoubleClick"
+                    label="Alternar Breakpoint"
+                    actionID="RulerDoubleClick"
+                    definitionId="dev.fbdebug.dbeaver.rulerToggleBreakpoint"
+                    class="dev.fbdebug.dbeaver.editor.RulerToggleBreakpointAction"/>
         </editorContribution>
     </extension>
 

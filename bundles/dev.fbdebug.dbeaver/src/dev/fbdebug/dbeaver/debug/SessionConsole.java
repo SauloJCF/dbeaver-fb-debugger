@@ -15,8 +15,8 @@ import dev.fbdebug.dbeaver.psql.ast.ParameterDeclaration;
 import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 
 /**
- * Console "Firebird PSQL Debug", onde cada Sessão de debug escreve as entradas, as saídas e como a transação
- * terminou. Pode ser chamado de qualquer thread.
+ * Console "Firebird PSQL Debug", onde cada Sessão de debug escreve as entradas, as saídas (ou as linhas do
+ * {@code SUSPEND}) e como a transação terminou. Pode ser chamado de qualquer thread.
  */
 public final class SessionConsole {
 
@@ -61,8 +61,9 @@ public final class SessionConsole {
         print(text.toString());
     }
 
-    void finished(ProcedureResult result, boolean committed) {
-        StringBuilder text = new StringBuilder("Saídas:\n");
+    /** Fim de uma Rotina executável: as saídas, ou o retorno de uma function. */
+    void finished(RoutineDefinition routine, ProcedureResult result, boolean committed) {
+        StringBuilder text = new StringBuilder(routine.returnValue() != null ? "Retorno:\n" : "Saídas:\n");
         if (result.names().isEmpty()) {
             text.append("   (nenhuma)\n");
         }
@@ -70,8 +71,42 @@ public final class SessionConsole {
             text.append("   ").append(result.names().get(i)).append(" = ")
                     .append(ValueText.of(result.values().get(i))).append('\n');
         }
-        text.append(committed ? "Fim: commit feito.\n" : "Fim: rollback feito.\n");
-        print(text.toString());
+        print(text.append(end(committed)).toString());
+    }
+
+    /** Linha emitida por um {@code SUSPEND}, na hora: com a execução pausada, as anteriores já estão no console. */
+    void row(RoutineDefinition routine, int number, List<Object> values) {
+        StringBuilder text = new StringBuilder("SUSPEND, linha ").append(number).append(": ");
+        for (int i = 0; i < values.size(); i++) {
+            text.append(i == 0 ? "" : ", ").append(routine.outputs().get(i).name()).append(" = ")
+                    .append(ValueText.of(values.get(i)));
+        }
+        print(text.append('\n').toString());
+    }
+
+    /**
+     * Fim de uma Rotina selecionável (ou de um {@code EXECUTE BLOCK}): as linhas do {@code SUSPEND}, na ordem em que
+     * foram emitidas, numa tabela. Um {@code EXECUTE BLOCK} sem {@code SUSPEND} não devolve as saídas, como no
+     * servidor.
+     */
+    void finished(RoutineDefinition routine, List<List<Object>> rows, boolean committed) {
+        StringBuilder text = new StringBuilder();
+        if (rows.isEmpty()) {
+            text.append("Resultado: nenhuma linha");
+            if (routine.kind() == RoutineDefinition.Kind.EXECUTE_BLOCK && !routine.outputs().isEmpty()) {
+                text.append(" (sem SUSPEND, o EXECUTE BLOCK não devolve as saídas)");
+            }
+            text.append('\n');
+        } else {
+            text.append("Resultado: ").append(rows.size()).append(rows.size() == 1 ? " linha\n" : " linhas\n")
+                    .append(ResultTable.of(routine.outputs().stream().map(ParameterDeclaration::name).toList(),
+                            rows));
+        }
+        print(text.append(end(committed)).toString());
+    }
+
+    private static String end(boolean committed) {
+        return committed ? "Fim: commit feito.\n" : "Fim: rollback feito.\n";
     }
 
     void aborted() {

@@ -1,6 +1,7 @@
 package dev.fbdebug.dbeaver.debug;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,9 +39,10 @@ import dev.fbdebug.dbeaver.psql.ast.RoutineDefinition;
 /**
  * Sessão de debug no modelo do Eclipse: um alvo com uma thread, a execução da Rotina, que roda numa thread própria.
  * Ela para nos breakpoints da conexão da sessão, inclusive nos das Rotinas chamadas, e nos steps
- * ({@link ExecutionControl}). Na pausa, a edição de variáveis e os watches rodam na thread da execução. As saídas, o
- * erro ou a interrupção vão para o {@link SessionConsole}. Terminate pede o fim à sessão
- * ({@link DebugSession#abort()}): ela para antes do próximo statement, mesmo pausada, e faz rollback.
+ * ({@link ExecutionControl}). Na pausa, a edição de variáveis e os watches rodam na thread da execução. As saídas (ou
+ * as linhas do {@code SUSPEND}, à medida que são emitidas), o erro ou a interrupção vão para o {@link SessionConsole}.
+ * Terminate pede o fim à sessão ({@link DebugSession#abort()}): ela para antes do próximo statement, mesmo pausada, e
+ * faz rollback.
  */
 public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTarget {
 
@@ -65,6 +67,7 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
 
     private final ILaunch launch;
     private final String dataSourceId;
+    private final SourceId rootSource;
     private final RoutineDefinition routine;
     private final List<Object> inputs;
     private final boolean commitOnFinish;
@@ -79,15 +82,19 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
     private volatile boolean terminated;
 
     /**
-     * @param dataSourceId id da conexão do DBeaver, de cujas Rotinas são os breakpoints da sessão
+     * @param rootSource texto da Rotina raiz, na conexão do DBeaver de cujas Rotinas são os breakpoints da sessão:
+     *            num {@code EXECUTE BLOCK}, o do editor SQL de onde ele saiu
+     * @param routine a Rotina raiz; com {@code SUSPEND}, e sempre num {@code EXECUTE BLOCK}, roda como selecionável,
+     *            e cada linha emitida vai para o console na hora
      * @param inputs valores das entradas, na ordem; os que faltarem no fim usam o valor padrão
      * @param connectionOwner dono da conexão da sessão (o contexto isolado do DBeaver), fechado ao fim
      */
-    public PsqlDebugTarget(ILaunch launch, String dataSourceId, RoutineDefinition routine, List<Object> inputs,
+    public PsqlDebugTarget(ILaunch launch, SourceId rootSource, RoutineDefinition routine, List<Object> inputs,
             boolean commitOnFinish, SessionOpener opener, AutoCloseable connectionOwner, SessionConsole console) {
         super(null);
         this.launch = launch;
-        this.dataSourceId = dataSourceId;
+        this.dataSourceId = rootSource.dataSourceId();
+        this.rootSource = rootSource;
         this.routine = routine;
         this.inputs = inputs;
         this.commitOnFinish = commitOnFinish;
@@ -126,8 +133,17 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
             if (terminateRequested) {
                 opened.abort();
             }
-            ProcedureResult result = opened.run(routine, inputs);
-            console.finished(result, commitOnFinish);
+            if (routine.kind() == RoutineDefinition.Kind.EXECUTE_BLOCK || routine.selectable()) {
+                List<List<Object>> rows = new ArrayList<>();
+                opened.select(routine, inputs, row -> {
+                    rows.add(row);
+                    console.row(routine, rows.size(), row);
+                });
+                console.finished(routine, rows, commitOnFinish);
+            } else {
+                ProcedureResult result = opened.run(routine, inputs);
+                console.finished(routine, result, commitOnFinish);
+            }
         } catch (SessionAbortedException e) {
             console.aborted();
         } catch (SQLException e) {
@@ -209,7 +225,12 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
 
     /** Texto de que são as posições do frame. */
     SourceId sourceOf(Frame frame) {
-        return SourceId.of(dataSourceId, frame.sourceRoutine());
+        return sourceOf(frame.sourceRoutine());
+    }
+
+    /** O texto da Rotina raiz é o do launch; o das outras sai do nome delas. */
+    private SourceId sourceOf(RoutineDefinition source) {
+        return source == routine ? rootSource : SourceId.of(dataSourceId, source);
     }
 
     /**
@@ -236,7 +257,7 @@ public final class PsqlDebugTarget extends PsqlDebugElement implements IDebugTar
         if (index.isEmpty() || !breakpointManager().isEnabled()) {
             return null;
         }
-        return index.get(new Location(SourceId.of(dataSourceId, source), line));
+        return index.get(new Location(sourceOf(source), line));
     }
 
     /** Refaz o índice dos breakpoints ativos da conexão, a cada mudança neles. */

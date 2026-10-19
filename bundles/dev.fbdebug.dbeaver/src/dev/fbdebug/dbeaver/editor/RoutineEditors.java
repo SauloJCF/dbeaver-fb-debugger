@@ -2,6 +2,7 @@ package dev.fbdebug.dbeaver.editor;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.NavigableSet;
 import java.util.Objects;
 
 import org.eclipse.core.runtime.ILog;
@@ -22,6 +23,7 @@ import org.eclipse.ui.texteditor.IEditorStatusLine;
 import org.eclipse.ui.texteditor.ITextEditor;
 import org.jkiss.dbeaver.DBException;
 import org.jkiss.dbeaver.ext.generic.model.GenericProcedure;
+import org.jkiss.dbeaver.ext.generic.model.GenericStructContainer;
 import org.jkiss.dbeaver.model.DBPDataSourceContainer;
 import org.jkiss.dbeaver.model.navigator.DBNDatabaseNode;
 import org.jkiss.dbeaver.model.navigator.DBNUtils;
@@ -31,14 +33,20 @@ import org.jkiss.dbeaver.model.struct.rdb.DBSProcedureType;
 import org.jkiss.dbeaver.ui.UIUtils;
 import org.jkiss.dbeaver.ui.controls.folders.ITabbedFolderContainer;
 import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
+import org.jkiss.dbeaver.ui.editors.sql.SQLEditor;
 import org.jkiss.dbeaver.ui.navigator.actions.NavigatorHandlerObjectOpen;
 
 import dev.fbdebug.dbeaver.debug.SourceId;
+import dev.fbdebug.dbeaver.psql.PsqlSyntaxException;
+import dev.fbdebug.dbeaver.psql.RoutineParser;
+import dev.fbdebug.dbeaver.psql.StatementLines;
 
 /**
  * Editor do objeto do DBeaver de uma Rotina Firebird e o editor de texto da pasta Source dele, onde ficam os
- * breakpoints e a linha da pausa. O plugin do Firebird do DBeaver não exporta as classes dele: a Rotina é a procedure
- * do plugin genérico, e a conexão Firebird é reconhecida pelo provedor do driver. Só na thread de UI, fora onde dito.
+ * breakpoints e a linha da pausa; também o editor SQL de uma conexão Firebird, que faz o mesmo papel para um
+ * {@code EXECUTE BLOCK} e para o corpo de uma package ({@link SqlEditors}). O plugin do Firebird do DBeaver não exporta
+ * as classes dele: a Rotina é a procedure do plugin genérico, e a conexão Firebird é reconhecida pelo provedor do
+ * driver. Só na thread de UI, fora onde dito.
  */
 public final class RoutineEditors {
 
@@ -59,7 +67,12 @@ public final class RoutineEditors {
     /** A procedure (ou function) é de uma conexão Firebird. */
     public static boolean isFirebird(GenericProcedure procedure) {
         DBPDataSourceContainer container = procedure.getDataSource().getContainer();
-        return container != null && FIREBIRD_PROVIDER.equals(container.getDriver().getProviderId());
+        return container != null && isFirebird(container);
+    }
+
+    /** A conexão do DBeaver é Firebird. */
+    public static boolean isFirebird(DBPDataSourceContainer container) {
+        return FIREBIRD_PROVIDER.equals(container.getDriver().getProviderId());
     }
 
     /** @return o texto da Rotina, ou {@code null} se o objeto não é procedure nem function Firebird */
@@ -77,28 +90,25 @@ public final class RoutineEditors {
     }
 
     /**
-     * Objeto do DBeaver de um texto de Rotina da conexão de {@code root}: a própria {@code root}, ou uma procedure ou
-     * function fora de package do mesmo container, achada pelo nome e pelo tipo. Rotina de package não tem objeto: o
-     * DBeaver não mostra as packages do Firebird. De qualquer thread: o debug.ui chama fora da thread de UI, e a busca
-     * pode ler os metadados do DBeaver.
+     * Objeto do DBeaver de um texto de Rotina da conexão: uma procedure ou function fora de package, achada pelo nome
+     * e pelo tipo. Rotina de package não tem objeto: o DBeaver não mostra as packages do Firebird, e o texto delas fica
+     * no console aberto por "Abrir Package" ({@link SqlEditors}). De qualquer thread: o debug.ui chama fora da thread de
+     * UI, e a busca pode ler os metadados do DBeaver.
      *
      * @return {@code null} se não há objeto para o texto
      */
-    public static DBSObject routine(GenericProcedure root, SourceId source) {
-        if (source.equals(sourceOf(root))) {
-            return root;
-        }
+    public static DBSObject routine(DBPDataSourceContainer container, SourceId source) {
         DBSProcedureType type = switch (source.kind()) {
             case PROCEDURE -> DBSProcedureType.PROCEDURE;
             case FUNCTION -> DBSProcedureType.FUNCTION;
             case PACKAGE, TRIGGER, EXECUTE_BLOCK -> null;
         };
-        if (type == null || !source.dataSourceId().equals(root.getDataSource().getContainer().getId())) {
+        if (type == null || !source.dataSourceId().equals(container.getId())
+                || !(container.getDataSource() instanceof GenericStructContainer structure)) {
             return null;
         }
         try {
-            Collection<? extends GenericProcedure> procedures =
-                    root.getContainer().getProcedures(new VoidProgressMonitor());
+            Collection<? extends GenericProcedure> procedures = structure.getProcedures(new VoidProgressMonitor());
             for (GenericProcedure procedure : procedures == null ? List.<GenericProcedure>of() : procedures) {
                 if (procedure.getName().equals(source.name()) && procedure.getProcedureType() == type
                         && procedure.getPackage() == null) {
@@ -111,10 +121,29 @@ public final class RoutineEditors {
         return null;
     }
 
-    /** @return o texto da Rotina do editor do objeto, ou {@code null} */
+    /** @return o texto da Rotina do editor do objeto ou do editor SQL ({@link SqlEditors#sourceOf}), ou {@code null} */
     static SourceId sourceOf(IEditorPart editor) {
+        if (editor instanceof SQLEditor) {
+            return SqlEditors.sourceOf(editor);
+        }
         return editor != null && editor.getEditorInput() instanceof IDatabaseEditorInput input
                 ? sourceOf(input.getDatabaseObject()) : null;
+    }
+
+    /**
+     * Linhas com statement do texto do editor em que fica a linha: a Rotina do editor do objeto, ou o texto do editor
+     * SQL ({@link SqlEditors#statementLines}).
+     *
+     * @param editor o editor do objeto ou o editor SQL
+     * @param line linha do documento, a partir de 1
+     * @return {@code null} se a linha não está num texto de Rotina
+     * @throws PsqlSyntaxException se o texto não é reconhecido
+     */
+    static NavigableSet<Integer> statementLines(IEditorPart editor, IDocument document, int line) {
+        if (editor instanceof SQLEditor sql) {
+            return SqlEditors.statementLines(sql, document, line);
+        }
+        return StatementLines.of(RoutineParser.parse(document.get()));
     }
 
     /** Editor do objeto: a própria parte ou, num editor de texto de uma pasta, o editor que a contém. */
@@ -127,11 +156,14 @@ public final class RoutineEditors {
 
     /**
      * Editor de texto da pasta Source: a própria parte, se é ele, ou o da pasta ativa do editor do objeto, que o
-     * repassa pelo {@code getAdapter}.
+     * repassa pelo {@code getAdapter}. Num editor SQL de conexão Firebird, ele mesmo.
      *
      * @return {@code null} se a pasta ativa não é a Source
      */
     static ITextEditor sourceText(IWorkbenchPart part) {
+        if (SqlEditors.isDebuggable(part)) {
+            return (ITextEditor) part;
+        }
         ITextEditor text = part instanceof ITextEditor editor ? editor
                 : part == null ? null : part.getAdapter(ITextEditor.class);
         return text != null && text.getSite() != null && SOURCE_FOLDER.equals(text.getSite().getId()) ? text : null;
