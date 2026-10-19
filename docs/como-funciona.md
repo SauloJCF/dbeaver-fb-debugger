@@ -115,6 +115,12 @@ INSERT INTO LOG SELECT F_DESCONTO(1) FROM RDB$DATABASE;  -- Executado no servido
 
 Uma trigger **não** é alcançada por step into a partir de um `INSERT`. Ela só é depurada como **Trigger isolada**. No diálogo de launch você informa os valores de `NEW.*` e `OLD.*` e escolhe qual evento simular (`INSERTING`, `UPDATING` ou `DELETING`).
 
+- "Depurar Rotina" vale para uma trigger de tabela, no navegador ou no editor dela. Os breakpoints vão no ruler da pasta Source, como numa procedure. Trigger de banco e de DDL não aparecem.
+- O diálogo tem uma linha por coluna da tabela, com o tipo da coluna, o valor de `NEW` e o de `OLD`. Sem valor, a coluna vale `NULL`. O registro que a trigger não tem fica desabilitado: `NEW` numa trigger só de `DELETE` e `OLD` numa só de `INSERT` (o motor nem compila a referência). Os eventos são checkboxes, desmarcados na primeira vez. Só os eventos da trigger podem ser marcados. Numa trigger universal, o evento marcado decide o ramo.
+- Na pausa, `NEW.NOME`, `OLD.NOME` e os eventos aparecem em Variables como entradas, editáveis. Em Expressions, `NEW.NOME` vale como em qualquer expressão da trigger.
+- No fim, o console mostra os `NEW.*` finais (`NEW final:`). Numa trigger `AFTER`, o `NEW` não muda.
+- Nada é gravado na tabela da trigger: a linha não existe fora do diálogo. Uma trigger `AFTER` que lê a própria tabela vê o estado de antes do DML, e os valores padrão (`DEFAULT`) das colunas não entram sozinhos em `NEW.*`.
+
 ## Sub-rotinas e package temporário
 
 Hoje não usamos sub-rotinas (`DECLARE PROCEDURE/FUNCTION` dentro de uma Rotina), então o plugin não cria nenhum package `DBG$...` no banco. O resumo do ADR 0003, para quando isso mudar:
@@ -143,9 +149,9 @@ Mapa feito a partir dos nomes dos arquivos, dos ADRs e do glossário. Conferir n
 | Step into × servidor em cada chamada elegível | `interp/CallPolicy` (o `ExecutionControl` é a da sessão), `CallTargets` (Rotina chamada e linhas que a chamada alcança), `psql/CallSites` |
 | Aviso "executado no servidor" | `interp/ServerCalls`, `debug/ServerCallWarnings`, `editor/ServerCallAnnotations`; o tipo de anotação no `plugin.xml` |
 | Modelo de debug do Eclipse (pilha, variáveis, breakpoints, watches) | `debug/PsqlDebugTarget`, `PsqlThread`, `PsqlStackFrame`, `PsqlVariable`, `PsqlLineBreakpoint`, `PsqlSourceLocator`, `PsqlWatchExpressionDelegate` |
-| Console da sessão (entradas, saídas, linhas do `SUSPEND`) | `debug/SessionConsole`, `ResultTable`, `ValueText` |
+| Console da sessão (entradas, saídas, linhas do `SUSPEND`, `NEW.*` finais) | `debug/SessionConsole`, `ResultTable`, `ValueText` |
 | Editor do DBeaver (ruler, linha da pausa, objeto de uma Rotina chamada) | `editor/EditorBreakpoints`, `RoutineEditors`, `PsqlModelPresentation`, handlers do `plugin.xml` |
 | Editor SQL como texto de Rotina (`EXECUTE BLOCK`, console de package) | `editor/SqlEditors`, `RulerToggleBreakpointAction`; posições do documento em `psql/RoutineParser.placed` |
-| Launch | `launch/DebugRoutineHandler`, `OpenPackageHandler`, `DebuggableRoutines`, `RoutineLaunchDialog`, `RoutineLauncher` |
+| Launch (diálogo de `NEW`/`OLD`/eventos de trigger em `RoutineLaunchDialog`) | `launch/DebugRoutineHandler`, `OpenPackageHandler`, `DebuggableRoutines`, `RoutineLaunchDialog`, `RoutineLauncher` |
 | Fonte da Rotina | `source/RoutineSourceLoader` |
 | Packages temporários (sub-rotinas) | `interp/TemporaryPackages` |

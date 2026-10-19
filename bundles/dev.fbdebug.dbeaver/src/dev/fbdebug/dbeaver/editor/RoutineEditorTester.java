@@ -15,8 +15,8 @@ import org.jkiss.dbeaver.ui.editors.ILazyEditorInput;
 import org.jkiss.dbeaver.ui.editors.sql.SQLEditor;
 
 /**
- * {@code dev.fbdebug.dbeaver.breakpointSource}: o editor é o editor do objeto de uma procedure ou function Firebird, ou
- * um editor SQL de conexão Firebird ({@link SqlEditors}); os dois podem receber breakpoints. Liga os comandos de
+ * {@code dev.fbdebug.dbeaver.breakpointSource}: o editor é o editor do objeto de uma procedure, function ou trigger de
+ * tabela Firebird, ou um editor SQL de conexão Firebird ({@link SqlEditors}); os dois podem receber breakpoints. Liga os comandos de
  * breakpoint só nesses editores e mostra "Depurar Rotina" no menu de contexto deles.
  * <p>
  * Lê a entrada atual do editor, e não a variável {@code activeEditorInput}: um editor restaurado ao abrir o DBeaver tem

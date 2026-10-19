@@ -61,11 +61,16 @@ public final class SessionConsole {
         print(text.toString());
     }
 
-    /** Fim de uma Rotina executável: as saídas, ou o retorno de uma function. */
+    /**
+     * Fim de uma Rotina executável: as saídas, o retorno de uma function ou, numa trigger {@code BEFORE}, os
+     * {@code NEW.*} finais.
+     */
     void finished(RoutineDefinition routine, ProcedureResult result, boolean committed) {
-        StringBuilder text = new StringBuilder(routine.returnValue() != null ? "Retorno:\n" : "Saídas:\n");
+        boolean trigger = routine.kind() == RoutineDefinition.Kind.TRIGGER;
+        StringBuilder text = new StringBuilder(routine.returnValue() != null ? "Retorno:\n"
+                : trigger ? "NEW final:\n" : "Saídas:\n");
         if (result.names().isEmpty()) {
-            text.append("   (nenhuma)\n");
+            text.append(trigger ? "   (trigger AFTER: o NEW não é alterado)\n" : "   (nenhuma)\n");
         }
         for (int i = 0; i < result.names().size(); i++) {
             text.append("   ").append(result.names().get(i)).append(" = ")

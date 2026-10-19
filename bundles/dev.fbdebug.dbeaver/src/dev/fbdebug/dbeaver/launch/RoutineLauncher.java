@@ -65,7 +65,8 @@ import dev.fbdebug.dbeaver.source.RoutineSourceLoader;
 /**
  * Launch de uma Rotina: abre a conexão dedicada (um contexto isolado do DBeaver, fora de qualquer editor SQL), carrega
  * a Fonte, passa pelo Pré-check, mostra o diálogo e inicia a Sessão de debug na perspectiva Debug. A Rotina sai de um
- * objeto do DBeaver (procedure executável ou selecionável, function), recusado com o editor dele sujo; de um
+ * objeto do DBeaver (procedure executável ou selecionável, function, trigger de tabela), recusado com o editor dele
+ * sujo; de um
  * {@code EXECUTE BLOCK} do editor SQL, cujo texto é o código; ou do console do corpo de uma package ("Abrir Package"), a
  * rotina sob o cursor.
  */
@@ -166,6 +167,44 @@ final class RoutineLauncher {
     }
 
     /**
+     * Trigger de tabela do DBeaver, como Trigger isolada: a Fonte do banco, com {@code NEW.*} e {@code OLD.*} tipados
+     * pelas colunas da tabela e os eventos como entradas do diálogo.
+     */
+    private record TableTrigger(DBSObject trigger) implements Subject {
+
+        @Override
+        public DBPDataSourceContainer container() {
+            return trigger.getDataSource().getContainer();
+        }
+
+        @Override
+        public String name() {
+            return trigger.getName();
+        }
+
+        @Override
+        public String historyKey() {
+            return "TRIGGER " + trigger.getName();
+        }
+
+        @Override
+        public Loaded load(Connection connection) throws SQLException {
+            RoutineSourceLoader.TriggerSource source = RoutineSourceLoader.loadTrigger(connection, trigger.getName());
+            return checked(name(), source.text(), () -> RoutineParser.parseTrigger(source.text(), source.columns()));
+        }
+
+        @Override
+        public Object element() {
+            return trigger;
+        }
+
+        @Override
+        public void warn(SessionConsole console, Loaded loaded) {
+            warnIfEditorDiffers(console, trigger, loaded);
+        }
+    }
+
+    /**
      * {@code EXECUTE BLOCK} do editor SQL: o texto do editor é o código, sem regra de editor sujo, e as posições são as
      * do documento.
      *
@@ -255,18 +294,22 @@ final class RoutineLauncher {
         }
     }
 
-    /** Procedure, selecionável ou não, ou function do navegador ou do editor do objeto. */
-    static void launch(Shell shell, GenericProcedure procedure) {
-        if (procedure.getPackage() != null) {
+    /**
+     * Procedure, selecionável ou não, function ou trigger de tabela do navegador ou do editor do objeto
+     * ({@link DebuggableRoutines#find}).
+     */
+    static void launch(Shell shell, DBSObject routine) {
+        if (routine instanceof GenericProcedure procedure && procedure.getPackage() != null) {
             MessageDialog.openInformation(shell, TITLE,
                     "Rotina de package se depura do console do corpo dela (PSQL Debug > Abrir Package).");
             return;
         }
-        if (hasDirtyEditor(procedure)) {
+        if (hasDirtyEditor(routine)) {
             MessageDialog.openError(shell, TITLE, "Salve (compile) ou descarte as alterações antes de depurar.");
             return;
         }
-        launch(shell, new DatabaseRoutine(procedure));
+        launch(shell, routine instanceof GenericProcedure procedure ? new DatabaseRoutine(procedure)
+                : new TableTrigger(routine));
     }
 
     /**
@@ -470,8 +513,8 @@ final class RoutineLauncher {
      * segue o cabeçalho que o DBeaver gera no editor (issue 09). Se, numa linha de statement, o texto do editor aberto
      * não é o da Fonte do banco, o console avisa: a linha destacada e os breakpoints podem não bater.
      */
-    private static void warnIfEditorDiffers(SessionConsole console, GenericProcedure procedure, Loaded loaded) {
-        String editorText = RoutineEditors.openText(procedure);
+    private static void warnIfEditorDiffers(SessionConsole console, DBSObject routine, Loaded loaded) {
+        String editorText = RoutineEditors.openText(routine);
         if (editorText == null) {
             return;
         }
@@ -480,7 +523,7 @@ final class RoutineLauncher {
         for (int line : loaded.lines()) {
             if (line > editor.length || line > source.length
                     || !editor[line - 1].strip().equals(source[line - 1].strip())) {
-                console.warn("Em " + procedure.getName() + ", a linha " + line + " do editor não é a da Fonte do banco "
+                console.warn("Em " + routine.getName() + ", a linha " + line + " do editor não é a da Fonte do banco "
                         + "que o debugger executa: a linha destacada e os breakpoints podem não bater.");
                 return;
             }

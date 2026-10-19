@@ -15,9 +15,10 @@ import dev.fbdebug.dbeaver.editor.RoutineEditors;
 import dev.fbdebug.dbeaver.editor.SqlEditors;
 
 /**
- * Rotina do DBeaver de onde sai um Launch: a do editor de objeto ativo ou a selecionada no navegador. Em outra parte
- * (views do debug, console), a Rotina selecionada nela ou, sem objeto do banco selecionado, a do editor ativo. Sem
- * Rotina do DBeaver, o editor SQL ativo, de onde sai um {@code EXECUTE BLOCK} ou uma rotina do console de uma package.
+ * Rotina do DBeaver de onde sai um Launch (procedure, function ou trigger de tabela): a do editor de objeto ativo ou a
+ * selecionada no navegador. Em outra parte (views do debug, console), a Rotina selecionada nela ou, sem objeto do banco
+ * selecionado, a do editor ativo. Sem Rotina do DBeaver, o editor SQL ativo, de onde sai um {@code EXECUTE BLOCK} ou
+ * uma rotina do console de uma package.
  */
 final class DebuggableRoutines {
 
@@ -29,9 +30,9 @@ final class DebuggableRoutines {
      * @param activePart parte ativa; sendo um editor, vale a Rotina dele
      * @param activeEditor editor ativo, que continua definido com uma view em foco. Vale a entrada atual dele, e não a
      *            variável {@code activeEditorInput}, que fica com a entrada provisória de um editor restaurado
-     * @return a procedure ou function Firebird, ou {@code null} se não há
+     * @return a procedure, a function ou a trigger de tabela Firebird, ou {@code null} se não há
      */
-    static GenericProcedure find(Object selection, Object activePart, Object activeEditor) {
+    static DBSObject find(Object selection, Object activePart, Object activeEditor) {
         Object editorInput = activeEditor instanceof IEditorPart editor ? editor.getEditorInput() : null;
         DBSObject object = null;
         if (activePart instanceof IEditorPart && editorInput instanceof IDatabaseEditorInput input) {
@@ -43,7 +44,9 @@ final class DebuggableRoutines {
                 && editorInput instanceof IDatabaseEditorInput input) {
             object = input.getDatabaseObject();
         }
-        return object instanceof GenericProcedure procedure && RoutineEditors.isFirebird(procedure) ? procedure : null;
+        boolean routine = object instanceof GenericProcedure procedure && RoutineEditors.isFirebird(procedure)
+                || RoutineEditors.isTableTrigger(object);
+        return routine ? object : null;
     }
 
     /**

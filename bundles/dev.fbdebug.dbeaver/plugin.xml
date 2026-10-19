@@ -54,8 +54,10 @@
 
     <extension point="org.eclipse.ui.handlers">
         <!-- Antes de o plugin carregar, vale esta expressão; depois, o handler confere a Rotina de fato. O plugin do
-             Firebird do DBeaver não exporta FireBirdProcedure, mas a expressão compara só o nome da classe. No editor
-             SQL (EXECUTE BLOCK, console de package), o handler confere se a conexão é Firebird. -->
+             Firebird do DBeaver não exporta FireBirdProcedure nem FireBirdTableTrigger (a trigger de banco é outra
+             classe), mas a expressão compara só o nome da classe. O navegador do DBeaver adapta o nó a DBSProcedure e
+             a DBSObject, mas não a DBSTrigger. No editor SQL (EXECUTE BLOCK, console de package), o handler confere se
+             a conexão é Firebird. -->
         <handler
                 commandId="dev.fbdebug.dbeaver.debugRoutine"
                 class="dev.fbdebug.dbeaver.launch.DebugRoutineHandler">
@@ -65,9 +67,14 @@
                         <instanceof value="org.eclipse.jface.viewers.IStructuredSelection"/>
                         <count value="1"/>
                         <iterate operator="and">
-                            <adapt type="org.jkiss.dbeaver.model.struct.rdb.DBSProcedure">
-                                <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdProcedure"/>
-                            </adapt>
+                            <or>
+                                <adapt type="org.jkiss.dbeaver.model.struct.rdb.DBSProcedure">
+                                    <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdProcedure"/>
+                                </adapt>
+                                <adapt type="org.jkiss.dbeaver.model.struct.DBSObject">
+                                    <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdTableTrigger"/>
+                                </adapt>
+                            </or>
                         </iterate>
                     </with>
                     <with variable="activeEditorInput">
@@ -122,10 +129,10 @@
                 <command commandId="dev.fbdebug.dbeaver.openPackage"/>
             </menu>
         </menuContribution>
-        <!-- Menu de contexto do navegador: só aparece com a Rotina Firebird. O grupo generate só existe nos menus que o
-             DBeaver monta com o NavigatorUtils; no texto da pasta Source o item vem da contribuição seguinte. Não é
-             checkEnabled: com uma view do debug ou o console em foco, o comando vale para o editor ativo (menu
-             "PSQL Debug"), mas não deve aparecer no menu de contexto delas. -->
+        <!-- Menu de contexto do navegador: só aparece com a Rotina Firebird (de trigger, só a de tabela). O grupo
+             generate só existe nos menus que o DBeaver monta com o NavigatorUtils; no texto da pasta Source o item vem
+             da contribuição seguinte. Não é checkEnabled: com uma view do debug ou o console em foco, o comando vale
+             para o editor ativo (menu "PSQL Debug"), mas não deve aparecer no menu de contexto delas. -->
         <menuContribution allPopups="false" locationURI="popup:org.eclipse.ui.popup.any?after=generate">
             <command commandId="dev.fbdebug.dbeaver.debugRoutine">
                 <visibleWhen>
@@ -151,9 +158,15 @@
                                 <instanceof value="org.eclipse.jface.viewers.IStructuredSelection"/>
                                 <count value="1"/>
                                 <iterate operator="and">
-                                    <adapt type="org.jkiss.dbeaver.model.struct.rdb.DBSProcedure">
-                                        <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdProcedure"/>
-                                    </adapt>
+                                    <or>
+                                        <adapt type="org.jkiss.dbeaver.model.struct.rdb.DBSProcedure">
+                                            <instanceof value="org.jkiss.dbeaver.ext.firebird.model.FireBirdProcedure"/>
+                                        </adapt>
+                                        <adapt type="org.jkiss.dbeaver.model.struct.DBSObject">
+                                            <instanceof
+                                                    value="org.jkiss.dbeaver.ext.firebird.model.FireBirdTableTrigger"/>
+                                        </adapt>
+                                    </or>
                                 </iterate>
                             </with>
                         </and>

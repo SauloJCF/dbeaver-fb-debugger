@@ -24,6 +24,8 @@ import org.eclipse.ui.texteditor.ITextEditor;
 import org.jkiss.dbeaver.DBException;
 import org.jkiss.dbeaver.ext.generic.model.GenericProcedure;
 import org.jkiss.dbeaver.ext.generic.model.GenericStructContainer;
+import org.jkiss.dbeaver.ext.generic.model.GenericTableBase;
+import org.jkiss.dbeaver.ext.generic.model.GenericTrigger;
 import org.jkiss.dbeaver.model.DBPDataSourceContainer;
 import org.jkiss.dbeaver.model.navigator.DBNDatabaseNode;
 import org.jkiss.dbeaver.model.navigator.DBNUtils;
@@ -45,8 +47,8 @@ import dev.fbdebug.dbeaver.psql.StatementLines;
  * Editor do objeto do DBeaver de uma Rotina Firebird e o editor de texto da pasta Source dele, onde ficam os
  * breakpoints e a linha da pausa; também o editor SQL de uma conexão Firebird, que faz o mesmo papel para um
  * {@code EXECUTE BLOCK} e para o corpo de uma package ({@link SqlEditors}). O plugin do Firebird do DBeaver não exporta
- * as classes dele: a Rotina é a procedure do plugin genérico, e a conexão Firebird é reconhecida pelo provedor do
- * driver. Só na thread de UI, fora onde dito.
+ * as classes dele: a Rotina é a procedure ou a trigger do plugin genérico, e a conexão Firebird é reconhecida pelo
+ * provedor do driver. Só na thread de UI, fora onde dito.
  */
 public final class RoutineEditors {
 
@@ -64,10 +66,20 @@ public final class RoutineEditors {
     private RoutineEditors() {
     }
 
-    /** A procedure (ou function) é de uma conexão Firebird. */
-    public static boolean isFirebird(GenericProcedure procedure) {
-        DBPDataSourceContainer container = procedure.getDataSource().getContainer();
+    /** O objeto (procedure, function, trigger) é de uma conexão Firebird. */
+    public static boolean isFirebird(DBSObject object) {
+        DBPDataSourceContainer container = object.getDataSource() == null ? null
+                : object.getDataSource().getContainer();
         return container != null && isFirebird(container);
+    }
+
+    /**
+     * Trigger de tabela Firebird, a única que se depura (Trigger isolada). A do plugin do Firebird é uma
+     * {@code GenericTrigger} cujo dono é a tabela; o de uma trigger de banco é o banco.
+     */
+    public static boolean isTableTrigger(DBSObject object) {
+        return object instanceof GenericTrigger<?> trigger && trigger.getParentObject() instanceof GenericTableBase
+                && isFirebird(trigger);
     }
 
     /** A conexão do DBeaver é Firebird. */
@@ -75,8 +87,14 @@ public final class RoutineEditors {
         return FIREBIRD_PROVIDER.equals(container.getDriver().getProviderId());
     }
 
-    /** @return o texto da Rotina, ou {@code null} se o objeto não é procedure nem function Firebird */
+    /**
+     * @return o texto da Rotina, ou {@code null} se o objeto não é procedure, function nem trigger de tabela Firebird
+     */
     public static SourceId sourceOf(DBSObject object) {
+        if (isTableTrigger(object)) {
+            return new SourceId(object.getDataSource().getContainer().getId(), SourceId.Kind.TRIGGER,
+                    object.getName());
+        }
         if (!(object instanceof GenericProcedure procedure) || !isFirebird(procedure)) {
             return null;
         }
@@ -92,8 +110,9 @@ public final class RoutineEditors {
     /**
      * Objeto do DBeaver de um texto de Rotina da conexão: uma procedure ou function fora de package, achada pelo nome
      * e pelo tipo. Rotina de package não tem objeto: o DBeaver não mostra as packages do Firebird, e o texto delas fica
-     * no console aberto por "Abrir Package" ({@link SqlEditors}). De qualquer thread: o debug.ui chama fora da thread de
-     * UI, e a busca pode ler os metadados do DBeaver.
+     * no console aberto por "Abrir Package" ({@link SqlEditors}). Trigger não é procurada: nenhuma é alcançada por step
+     * into, e a do launch já vem do DBeaver. De qualquer thread: o debug.ui chama fora da thread de UI, e a busca pode
+     * ler os metadados do DBeaver.
      *
      * @return {@code null} se não há objeto para o texto
      */
