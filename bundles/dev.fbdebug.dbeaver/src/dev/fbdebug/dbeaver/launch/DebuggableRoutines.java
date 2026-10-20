@@ -15,10 +15,10 @@ import dev.fbdebug.dbeaver.editor.RoutineEditors;
 import dev.fbdebug.dbeaver.editor.SqlEditors;
 
 /**
- * Rotina do DBeaver de onde sai um Launch (procedure, function ou trigger de tabela): a do editor de objeto ativo ou a
- * selecionada no navegador. Em outra parte (views do debug, console), a Rotina selecionada nela ou, sem objeto do banco
- * selecionado, a do editor ativo. Sem Rotina do DBeaver, o editor SQL ativo, de onde sai um {@code EXECUTE BLOCK} ou
- * uma rotina do console de uma package.
+ * Rotina de onde sai um Launch: sempre a do editor ativo, com qualquer parte em foco (o editor, o navegador, uma view do
+ * debug ou o console). É a procedure, function ou trigger de tabela do editor de objeto ou, sem ela, o editor SQL de
+ * conexão Firebird, de onde sai um {@code EXECUTE BLOCK} ou uma rotina do console de uma package. A seleção do navegador
+ * não conta: o launch sai do editor, onde ficam os breakpoints (issue 21).
  */
 final class DebuggableRoutines {
 
@@ -26,40 +26,29 @@ final class DebuggableRoutines {
     }
 
     /**
-     * @param selection seleção atual
-     * @param activePart parte ativa; sendo um editor, vale a Rotina dele
      * @param activeEditor editor ativo, que continua definido com uma view em foco. Vale a entrada atual dele, e não a
      *            variável {@code activeEditorInput}, que fica com a entrada provisória de um editor restaurado
      * @return a procedure, a function ou a trigger de tabela Firebird, ou {@code null} se não há
      */
-    static DBSObject find(Object selection, Object activePart, Object activeEditor) {
-        Object editorInput = activeEditor instanceof IEditorPart editor ? editor.getEditorInput() : null;
-        DBSObject object = null;
-        if (activePart instanceof IEditorPart && editorInput instanceof IDatabaseEditorInput input) {
-            object = input.getDatabaseObject();
-        } else if (selection instanceof IStructuredSelection structured && structured.size() == 1) {
-            object = NavigatorUtils.getSelectedObject((ISelection) structured);
+    static DBSObject find(Object activeEditor) {
+        if (!(activeEditor instanceof IEditorPart editor
+                && editor.getEditorInput() instanceof IDatabaseEditorInput input)) {
+            return null;
         }
-        if (object == null && !(activePart instanceof IEditorPart) && !(activePart instanceof INavigatorModelView)
-                && editorInput instanceof IDatabaseEditorInput input) {
-            object = input.getDatabaseObject();
-        }
+        DBSObject object = input.getDatabaseObject();
         boolean routine = object instanceof GenericProcedure procedure && RoutineEditors.isFirebird(procedure)
                 || RoutineEditors.isTableTrigger(object);
         return routine ? object : null;
     }
 
     /**
-     * Editor SQL de conexão Firebird de onde sai o Launch: o ativo ou, com uma parte que não é editor nem o navegador em
-     * foco, o editor ativo. Vale só quando {@link #find} não acha Rotina.
+     * Editor SQL de conexão Firebird de onde sai o Launch. Vale só quando {@link #find} não acha Rotina.
      *
      * @param activeEditor editor ativo, que continua definido com uma view em foco
      * @return {@code null} se não há
      */
-    static SQLEditor findSqlEditor(Object activePart, Object activeEditor) {
-        Object editor = activePart instanceof IEditorPart || activePart instanceof INavigatorModelView ? activePart
-                : activeEditor;
-        return SqlEditors.isDebuggable(editor) ? (SQLEditor) editor : null;
+    static SQLEditor findSqlEditor(Object activeEditor) {
+        return SqlEditors.isDebuggable(activeEditor) ? (SQLEditor) activeEditor : null;
     }
 
     /**

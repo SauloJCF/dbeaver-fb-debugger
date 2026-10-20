@@ -18,6 +18,6 @@ public final class PsqlLaunchDelegate implements ILaunchConfigurationDelegate {
     public void launch(ILaunchConfiguration configuration, String mode, ILaunch launch, IProgressMonitor monitor)
             throws CoreException {
         throw new CoreException(Status.error(
-                "Para depurar de novo, use \"Depurar Rotina\" na Rotina, no navegador ou no editor do DBeaver."));
+                "Para depurar de novo, abra a Rotina e use \"Depurar Rotina\" no editor dela ou no menu \"PSQL Debug\"."));
     }
 }

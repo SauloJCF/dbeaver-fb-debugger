@@ -95,3 +95,7 @@ No teste à mão, "Depurar Rotina" não apareceu no menu de contexto do editor d
 ### 2026-10-17 — teste à mão do menu de contexto (humano)
 
 O humano instalou o zip `0.1.0.202610172355` no DBeaver 26.2.2 e informou que está "tudo certo agora": "Depurar Rotina" aparece no menu de contexto do texto da pasta Source e abre o diálogo.
+
+### 2026-10-19 — "Depurar Rotina" sai do navegador (agente)
+
+A ação no menu de contexto do navegador, que era critério de aceite desta issue, saiu na issue 21 (`21-ajustes-nos-menus.md`): sem o editor da Rotina aberto não há onde pôr breakpoints antes do launch. "Depurar Rotina" fica no menu de contexto do texto da pasta Source, no editor SQL e no menu "PSQL Debug", que vale sempre a Rotina do editor ativo, também com o navegador em foco. A seleção do navegador deixa de contar.

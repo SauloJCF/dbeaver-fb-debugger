@@ -295,7 +295,7 @@ final class RoutineLauncher {
     }
 
     /**
-     * Procedure, selecionável ou não, function ou trigger de tabela do navegador ou do editor do objeto
+     * Procedure, selecionável ou não, function ou trigger de tabela do editor do objeto
      * ({@link DebuggableRoutines#find}).
      */
     static void launch(Shell shell, DBSObject routine) {

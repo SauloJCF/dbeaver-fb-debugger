@@ -38,7 +38,7 @@ END
 
 ### 1. Launch
 
-No DBeaver você escolhe a Rotina e abre o diálogo de launch, por "Depurar Rotina" no menu de contexto do navegador ou do editor da Rotina, ou no menu "PSQL Debug". Assim saem procedures (selecionáveis ou não) e functions; `EXECUTE BLOCK` e rotinas de package saem do editor SQL (ver "Selecionável, function, package e `EXECUTE BLOCK`"). Com uma view do debug ou o console em foco, o menu "PSQL Debug" usa a Rotina do editor ativo. No diálogo você preenche `PERCENTUAL = 10`, o isolamento da transação e se quer "commit ao terminar". O launch é a única forma de iniciar uma sessão, e não existe attach.
+No DBeaver você abre o editor da Rotina, põe os breakpoints e abre o diálogo de launch, por "Depurar Rotina" no menu de contexto do texto da pasta Source ou no menu "PSQL Debug". Assim saem procedures (selecionáveis ou não) e functions; `EXECUTE BLOCK` e rotinas de package saem do editor SQL (ver "Selecionável, function, package e `EXECUTE BLOCK`"). O menu "PSQL Debug" usa sempre a Rotina do editor ativo, com qualquer parte em foco, inclusive o navegador e as views do debug; o que está selecionado no navegador não conta. Sem editor de Rotina ativo, o item fica inativo. O navegador não tem "Depurar Rotina" no menu de contexto, porque sem o editor aberto não há onde pôr breakpoints antes. No diálogo você preenche `PERCENTUAL = 10`, o isolamento da transação e se quer "commit ao terminar". O launch é a única forma de iniciar uma sessão, e não existe attach.
 
 Antes de começar, o plugin lê o texto da Rotina nos metadados do banco (a **Fonte do banco**). Se o editor tiver alterações não salvas, o launch é bloqueado, para garantir que o que você vê é o que roda. Em seguida o **Pré-check** varre o AST. Se houver uma construção não suportada, ele recusa o launch e mostra linha e coluna. Isso segue o ADR 0001: nada é executado "mais ou menos".
 
@@ -115,7 +115,7 @@ INSERT INTO LOG SELECT F_DESCONTO(1) FROM RDB$DATABASE;  -- Executado no servido
 
 Uma trigger **não** é alcançada por step into a partir de um `INSERT`. Ela só é depurada como **Trigger isolada**. No diálogo de launch você informa os valores de `NEW.*` e `OLD.*` e escolhe qual evento simular (`INSERTING`, `UPDATING` ou `DELETING`).
 
-- "Depurar Rotina" vale para uma trigger de tabela, no navegador ou no editor dela. Os breakpoints vão no ruler da pasta Source, como numa procedure. Trigger de banco e de DDL não aparecem.
+- "Depurar Rotina" vale para uma trigger de tabela, no editor dela. Os breakpoints vão no ruler da pasta Source, como numa procedure. Trigger de banco e de DDL não aparecem.
 - O diálogo tem uma linha por coluna da tabela, com o tipo da coluna, o valor de `NEW` e o de `OLD`. Sem valor, a coluna vale `NULL`. O registro que a trigger não tem fica desabilitado: `NEW` numa trigger só de `DELETE` e `OLD` numa só de `INSERT` (o motor nem compila a referência). Os eventos são checkboxes, desmarcados na primeira vez. Só os eventos da trigger podem ser marcados. Numa trigger universal, o evento marcado decide o ramo.
 - Na pausa, `NEW.NOME`, `OLD.NOME` e os eventos aparecem em Variables como entradas, editáveis. Em Expressions, `NEW.NOME` vale como em qualquer expressão da trigger.
 - No fim, o console mostra os `NEW.*` finais (`NEW final:`). Numa trigger `AFTER`, o `NEW` não muda.

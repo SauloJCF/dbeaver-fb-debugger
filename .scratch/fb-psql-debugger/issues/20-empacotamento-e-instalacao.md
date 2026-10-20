@@ -1,7 +1,7 @@
 # 20 — Empacotamento e instalação interna
 
 Status: ready-for-agent
-Blocked by: 17, 18, 19
+Blocked by: 17, 18, 19, 21
 
 ## O que construir
 
