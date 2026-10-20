@@ -192,3 +192,9 @@ Os testes ficam em `bundles/dev.fbdebug.dbeaver/test/` e são JUnit comum, sem O
 3. Para rodar: botão direito em `test` > **Run As > JUnit Test**. Não use "JUnit Plug-in Test".
 
 O `fbdebug-test.properties` é achado subindo a partir da pasta do projeto. Se o código de `src/` não achar `org.antlr...`, use **PDE Tools > Update Classpath…**.
+
+## Licença
+
+MIT: pode usar, copiar, modificar e redistribuir à vontade, inclusive em projetos comerciais. Veja [LICENSE](LICENSE).
+
+Os componentes de terceiros incluídos (`org.eclipse.debug.ui`, sob EPL 2.0, e o runtime do ANTLR 4, sob BSD 3-Clause) seguem com as licenças originais. Veja [NOTICE](NOTICE).

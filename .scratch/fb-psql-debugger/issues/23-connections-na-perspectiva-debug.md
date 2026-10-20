@@ -12,7 +12,7 @@ Quando a perspectiva Debug abre pela primeira vez, no início da primeira Sessã
 ## Por quê
 
 - `RoutineLauncher.showDebugPerspective()` troca para `IDebugUIConstants.ID_DEBUG_PERSPECTIVE`. Cada perspectiva tem as próprias views; só a área de editores é compartilhada.
-- O layout inicial vem de `DebugPerspectiveFactory.createInitialLayout`, do `org.eclipse.debug.ui` 3.20 empacotado (ADR 0004). Ele monta:
+- O layout inicial vem de `DebugPerspectiveFactory.createInitialLayout`, do `org.eclipse.debug.ui` 3.22 empacotado (ADR 0004). Ele monta:
   - à esquerda: Debug, mais um placeholder do Project Explorer;
   - embaixo: Console, Problems e placeholders;
   - à direita: Variables, Breakpoints, Expressions e placeholders de Outline e Properties.
