@@ -6,13 +6,13 @@
         provider-name="Saulo Figueiredo">
 
     <description>
-        Depurador de Rotinas PSQL do Firebird 5 para o DBeaver CE 26.0.2. Inclui o org.eclipse.debug.ui,
+        Depurador de Rotinas PSQL do Firebird 5 para o DBeaver CE 26.2.2. Inclui o org.eclipse.debug.ui,
         que o DBeaver não traz (ADR 0004).
     </description>
 
     <plugin id="dev.fbdebug.dbeaver" version="0.0.0"/>
 
-    <!-- Mesma release do Eclipse (4.39) cujo debug.core é o do DBeaver 26.0.2. -->
-    <plugin id="org.eclipse.debug.ui" version="3.20.0.v20260209-1220"/>
+    <!-- Mesma release do Eclipse (4.41) cujo debug.core é o do DBeaver 26.2.2. -->
+    <plugin id="org.eclipse.debug.ui" version="3.22.0.v20260817-0925"/>
 
 </feature>

@@ -16,7 +16,7 @@ import dev.fbdebug.dbeaver.psql.RoutineParser;
  * Firebird não guarda como texto, é montado a partir dos parâmetros e de {@code RDB$FIELDS}.
  *
  * <p>
- * O cabeçalho segue as quebras de linha do que o editor do DBeaver 26.0.2 mostra para o objeto
+ * O cabeçalho segue as quebras de linha do que o editor do DBeaver 26.2.2 mostra para o objeto
  * ({@code FireBirdUtils.getProcedureSourceWithHeader}): entradas na linha do {@code CREATE}, cada saída numa linha,
  * numa function com {@code SQL SECURITY} explícito uma linha para ele, e {@code AS} sozinho antes do corpo intacto. O texto dos tipos pode ser outro, mas o corpo começa na mesma linha,
  * então as linhas e colunas do AST dentro do corpo são as do editor.
@@ -250,7 +250,7 @@ public final class RoutineSourceLoader {
 
     /**
      * Trigger de tabela, de banco ou de DDL (estas duas o Pré-check recusa). O cabeçalho segue o de
-     * {@code FireBirdUtils.getTriggerSourceWithHeader} do DBeaver 26.0.2, sem {@code ACTIVE} nem {@code POSITION};
+     * {@code FireBirdUtils.getTriggerSourceWithHeader} do DBeaver 26.2.2, sem {@code ACTIVE} nem {@code POSITION};
      * numa trigger de DDL, que o DBeaver não mostra, os eventos viram {@code ANY DDL STATEMENT}.
      *
      * @param name nome da trigger como está nos metadados

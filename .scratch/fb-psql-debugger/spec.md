@@ -10,7 +10,7 @@ Depurar Rotinas PSQL do Firebird 5 dentro do DBeaver CE, com breakpoints, step e
 
 ## Ambiente alvo
 
-- DBeaver CE **26.0.2**, fixado (cada upgrade revalidado à mão).
+- DBeaver CE **26.2.2**, fixado (cada upgrade revalidado à mão).
 - Firebird **5.0**, banco **local de desenvolvimento** (Windows, `ServerMode = Super`).
 - Distribuição interna como repositório p2 em zip, instalado por "Help > Install New Software > Add > Archive" (ADR 0004). A feature "Firebird PSQL Debugger" inclui o plugin (`dev.fbdebug.dbeaver`, com runtime ANTLR embutido) e o `org.eclipse.debug.ui` da versão da plataforma do DBeaver.
 
@@ -66,12 +66,12 @@ Depurar Rotinas PSQL do Firebird 5 dentro do DBeaver CE, com breakpoints, step e
 
 ## Build e qualidade
 
-- Maven + Tycho, target platform apontando para o diretório da instalação do DBeaver 26.0.2.
+- Maven + Tycho, target platform apontando para o diretório da instalação do DBeaver 26.2.2.
 - Testes diferenciais contra o Firebird 5 local (ADR 0005): uma Rotina de exemplo por construção suportada, comparando execução nativa × Interpretador.
 
 ## Critérios de aceite
 
-1. Com a feature instalada pelo zip do repositório p2, o DBeaver 26.0.2 inicia sem erro e oferece "Debug" para Rotinas de uma conexão Firebird 5.
+1. Com a feature instalada pelo zip do repositório p2, o DBeaver 26.2.2 inicia sem erro e oferece "Debug" para Rotinas de uma conexão Firebird 5.
 2. Uma procedure com `IF`, `WHILE`, `FOR SELECT`, `WHEN` e `SUSPEND` pode ser percorrida por breakpoint, step over/into/return, com Variables e Expressions corretos a cada pausa.
 3. Editar uma variável durante a pausa altera o fluxo subsequente.
 4. Step into em `EXECUTE PROCEDURE` abre a Rotina chamada na pausa; chamada dentro de DML é executada sem pausa e com aviso na linha.

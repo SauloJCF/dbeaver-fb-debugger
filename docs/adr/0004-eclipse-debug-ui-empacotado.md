@@ -1,12 +1,14 @@
 # 0004 — UI de debug padrão do Eclipse, com `org.eclipse.debug.ui` empacotado
 
-Status: aceito — 2026-10-13 · revisado 2026-10-14 (forma de instalação: `dropins` → repositório p2)
+Status: aceito — 2026-10-13 · revisado 2026-10-14 (forma de instalação: `dropins` → repositório p2) · revisado 2026-10-19 (DBeaver 26.2.2, `debug.ui` 3.22.0)
 
 ## Contexto
 
-O DBeaver CE 26.0.2 traz `org.eclipse.debug.core`, mas não `org.eclipse.debug.ui` nem o antigo framework `org.jkiss.dbeaver.debug.*`. As dependências do `debug.ui` (`ui.console`, `ui.ide`, `ui.editors`, `jface.text`, `core.variables`) estão presentes.
+O DBeaver CE 26.2.2 traz `org.eclipse.debug.core`, mas não `org.eclipse.debug.ui` nem o antigo framework `org.jkiss.dbeaver.debug.*`. As dependências do `debug.ui` (`ui.console`, `ui.ide`, `ui.editors`, `jface.text`, `core.variables`) estão presentes.
 
-O protótipo da issue 01 provou que o `org.eclipse.debug.ui` 3.20.0 (Eclipse 4.39, mesma release do `debug.core` 3.23.200 do DBeaver) resolve e funciona dentro do DBeaver. Também mostrou que o DBeaver **não processa o `dropins/`**: o `org.eclipse.equinox.p2.reconciler.dropins` vem desligado no `bundles.info`.
+O protótipo da issue 01 provou que o `org.eclipse.debug.ui` 3.20.0 (Eclipse 4.39, mesma release do `debug.core` 3.23.200 do DBeaver 26.0.2, a versão usada então) resolve e funciona dentro do DBeaver. Também mostrou que o DBeaver **não processa o `dropins/`**: o `org.eclipse.equinox.p2.reconciler.dropins` vem desligado no `bundles.info`.
+
+O DBeaver fixado passou a ser o 26.2.2 (plataforma Eclipse 4.41, `debug.core` 3.24.0.v20260714-0955). O `debug.ui` empacotado segue a mesma regra e passou a ser o 3.22.0.v20260817-0925, do repositório `R-4.41-202608281142`.
 
 ## Decisão
 
@@ -26,7 +28,7 @@ Implementar o modelo de debug do Eclipse (debug target, threads, stack frames, v
 
 ## Consequências
 
-- O `debug.ui` precisa ser revalidado a cada upgrade do DBeaver (build fixado na 26.0.2).
+- O `debug.ui` precisa ser revalidado a cada upgrade do DBeaver (build fixado na 26.2.2).
 - Distribuição em um único arquivo, o zip do repositório p2, com o plugin (runtime ANTLR embutido), o `org.eclipse.debug.ui` e a feature.
 - O DBeaver não tem bundle pool p2 na pasta de instalação (falta o `artifacts.xml` na raiz). Por isso o p2 guarda os bundles instalados em `configuration/org.eclipse.osgi/<id>/data/<hash>/`, uma área de dados do `p2.extensionlocation`. Vale para qualquer extensão instalada por p2 no DBeaver, e não só para esta. Efeito: **iniciar o DBeaver com `-clean` remove o plugin em silêncio**, e é preciso reinstalar.
 - O plugin não é assinado: na instalação, o p2 pede para confiar no conteúdo não assinado.

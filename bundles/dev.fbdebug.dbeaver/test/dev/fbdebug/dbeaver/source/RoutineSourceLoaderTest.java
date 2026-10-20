@@ -88,7 +88,7 @@ class RoutineSourceLoaderTest {
     }
 
     /**
-     * O cabeçalho tem as quebras de linha do texto que o editor do DBeaver 26.0.2 mostra
+     * O cabeçalho tem as quebras de linha do texto que o editor do DBeaver 26.2.2 mostra
      * ({@code FireBirdUtils.getProcedureSourceWithHeader}): entradas na linha do {@code CREATE}, {@code RETURNS (},
      * uma saída por linha (com tabulação), {@code )}, {@code AS}, e o corpo gravado no banco. Assim o corpo começa na
      * mesma linha do editor, e as posições do AST no corpo são as do editor.

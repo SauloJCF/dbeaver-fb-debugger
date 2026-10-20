@@ -1,6 +1,6 @@
 # Firebird PSQL Debugger
 
-Plugin do DBeaver CE 26.0.2 para depurar Rotinas PSQL do Firebird 5. Vocabulário em `GLOSSARY.md`, decisões em `docs/adr/`.
+Plugin do DBeaver CE 26.2.2 para depurar Rotinas PSQL do Firebird 5. Vocabulário em `GLOSSARY.md`, decisões em `docs/adr/`.
 
 Como o depurador funciona por dentro: `docs/como-funciona.md`.
 
@@ -8,7 +8,7 @@ Como o depurador funciona por dentro: `docs/como-funciona.md`.
 
 ### Requisitos
 
-- DBeaver CE **26.0.2**. O plugin traz um `org.eclipse.debug.ui` fixado para a plataforma Eclipse dessa versão (ADR 0004); outra versão do DBeaver pode não carregar.
+- DBeaver CE **26.2.2**. O plugin traz um `org.eclipse.debug.ui` fixado para a plataforma Eclipse dessa versão (ADR 0004); outra versão do DBeaver pode não carregar.
 - Firebird 5 local, com a conexão já criada no DBeaver.
 - Para compilar o zip (ver "Gerar o zip de instalação"): JDK 21 no `JAVA_HOME`.
 
@@ -94,7 +94,7 @@ No menu **PSQL Debug**, **Depurar Rotina** fica inativo quando nenhum editor de 
 
 No diálogo de launch:
 
-- **Parâmetros de entrada:** para cada parâmetro, escolha **Valor** e digite o valor, ou escolha **NULL**. O servidor converte o texto para o tipo do parâmetro, como num `CAST`. Numa trigger, o diálogo pede os valores de `NEW`/`OLD` e o evento.
+- **Parâmetros de entrada:** para cada parâmetro, escolha **Valor** e digite o valor, ou escolha **NULL**. Um parâmetro com valor padrão na declaração também oferece **Padrão**. O servidor converte o texto para o tipo do parâmetro, como num `CAST`. Numa trigger, o diálogo pede os valores de `NEW`/`OLD` e o evento.
 - **Isolamento:** `READ COMMITTED` ou `SNAPSHOT`.
 - **Commit ao terminar:** desmarcado, tudo o que a Rotina fizer é desfeito no fim da sessão (rollback). Marque só se quiser que as alterações fiquem no banco.
 
@@ -134,9 +134,9 @@ O DBeaver não mostra as packages do Firebird. Use **PSQL Debug > Abrir Package�
 
 ### Requisitos
 
-- DBeaver CE 26.0.2 instalado na pasta padrão (`%LOCALAPPDATA%\DBeaver`). Os bundles dele são a target platform.
+- DBeaver CE 26.2.2 instalado na pasta padrão (`%LOCALAPPDATA%\DBeaver`). Os bundles dele são a target platform.
 - JDK 21 no `JAVA_HOME` (o Tycho 5 exige Java 21).
-- Acesso a `download.eclipse.org`: o `org.eclipse.debug.ui` vem do repositório do Eclipse 4.39.
+- Acesso a `download.eclipse.org`: o `org.eclipse.debug.ui` vem do repositório do Eclipse 4.41.
 
 ### Build pela linha de comando
 
@@ -172,7 +172,7 @@ Para gerar o build sem um Firebird disponível: `.\mvnw verify -DskipTests`.
 
 ### IDE: Eclipse IDE for RCP and RAP Developers
 
-1. Instale o pacote "Eclipse IDE for RCP and RAP Developers", 2026-03 ou mais novo.
+1. Instale o pacote "Eclipse IDE for RCP and RAP Developers", 2026-09 ou mais novo.
 2. **File > Import > Maven > Existing Maven Projects**, apontando para a raiz do repositório e importando todos os módulos. Se o Eclipse oferecer o conector do Tycho ("Tycho Project Configurators"), aceite.
 3. Abra `releng/dev.fbdebug.dbeaver.target/dev.fbdebug.dbeaver.target.target` e clique em **Set as Active Target Platform** (canto superior direito do editor). Espere a resolução; na primeira vez ela baixa o `debug.ui`.
 4. Para rodar o DBeaver com o plugin: clique com o botão direito em `DBeaver com Firebird PSQL Debugger.launch` (mesmo projeto) e escolha **Debug As > DBeaver com Firebird PSQL Debugger**. Breakpoints no código do plugin funcionam direto.
